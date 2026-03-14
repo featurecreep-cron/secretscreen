@@ -9,7 +9,9 @@ from __future__ import annotations
 
 from urllib.parse import urlsplit, urlunsplit
 
-REDACTED = "[REDACTED]"
+# Default replacement — matches _core.REDACTED but _urls is a leaf module,
+# so we define our own default to avoid circular imports.
+_DEFAULT_REPLACEMENT = "[REDACTED]"
 
 
 def has_url_credentials(value: str) -> bool:
@@ -23,7 +25,7 @@ def has_url_credentials(value: str) -> bool:
         return False
 
 
-def redact_url_password(value: str, replacement: str = REDACTED) -> str:
+def redact_url_password(value: str, replacement: str = _DEFAULT_REPLACEMENT) -> str:
     """Replace only the password portion of a credential URL.
 
     Preserves username, host, path, query, and fragment for debugging.
@@ -46,4 +48,4 @@ def redact_url_password(value: str, replacement: str = REDACTED) -> str:
             parsed.fragment,
         ))
     except (ValueError, AttributeError):
-        return replacement
+        return _DEFAULT_REPLACEMENT

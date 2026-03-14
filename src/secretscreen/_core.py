@@ -6,13 +6,13 @@ Public API: redact_pair, redact_dict, audit_pair, audit_dict.
 from __future__ import annotations
 
 import enum
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from secretscreen._entropy import looks_like_secret
 from secretscreen._formats import matches_known_format
 from secretscreen._keys import (
     DEFAULT_KEY_PATTERNS,
-    DEFAULT_SAFE_KEYS,
+    DEFAULT_SAFE_SUFFIXES,
     matches_key_pattern,
 )
 from secretscreen._parsers import extract_pairs
@@ -46,32 +46,24 @@ class ScreenConfig:
     """Configuration for secret screening."""
 
     mode: Mode = Mode.NORMAL
-    replacement: str | _CallableReplacement = REDACTED  # type: ignore[type-arg]
+    replacement: str = REDACTED
     extra_keys: tuple[str, ...] = ()
-    safe_keys: frozenset[str] = DEFAULT_SAFE_KEYS
+    safe_suffixes: tuple[str, ...] = DEFAULT_SAFE_SUFFIXES
     entropy_threshold: float = 4.5
+
+    def __post_init__(self) -> None:
+        """Pre-compute merged patterns to avoid recomputation per key."""
+        if not self.extra_keys:
+            self._patterns = DEFAULT_KEY_PATTERNS
+        else:
+            seen = {p.lower() for p in DEFAULT_KEY_PATTERNS}
+            extra = tuple(p for p in self.extra_keys if p.lower() not in seen)
+            self._patterns = DEFAULT_KEY_PATTERNS + extra
 
     @property
     def patterns(self) -> tuple[str, ...]:
         """Merged key patterns (defaults + extras)."""
-        if not self.extra_keys:
-            return DEFAULT_KEY_PATTERNS
-        seen = {p.lower() for p in DEFAULT_KEY_PATTERNS}
-        extra = tuple(p for p in self.extra_keys if p.lower() not in seen)
-        return DEFAULT_KEY_PATTERNS + extra
-
-
-# Type alias for callable replacement
-_CallableReplacement = type(None)  # placeholder — actual check is isinstance below
-
-
-def _get_replacement(config: ScreenConfig, key: str, value: str) -> str:
-    """Resolve the replacement string."""
-    r = config.replacement
-    if callable(r):
-        result = r(key, value)
-        return str(result)
-    return str(r)
+        return self._patterns
 
 
 def redact_pair(
@@ -81,25 +73,21 @@ def redact_pair(
     mode: Mode = Mode.NORMAL,
     replacement: str = REDACTED,
     extra_keys: tuple[str, ...] = (),
-    safe_keys: frozenset[str] = DEFAULT_SAFE_KEYS,
+    safe_suffixes: tuple[str, ...] = DEFAULT_SAFE_SUFFIXES,
     entropy_threshold: float = 4.5,
 ) -> str:
     """Redact a single key-value pair if the value is detected as a secret.
 
     Returns the replacement string if secret, or the original value.
-    Non-string values are returned unchanged (converted to str first if needed).
     """
-    if not isinstance(value, str):
+    if not isinstance(value, str) or not value:
         return value  # type: ignore[return-value]
-
-    if not value:
-        return value
 
     config = ScreenConfig(
         mode=mode,
         replacement=replacement,
         extra_keys=extra_keys,
-        safe_keys=safe_keys,
+        safe_suffixes=safe_suffixes,
         entropy_threshold=entropy_threshold,
     )
 
@@ -107,15 +95,7 @@ def redact_pair(
     if finding is None:
         return value
 
-    # URL credentials get partial redaction
-    if finding.layer == "url_credentials":
-        return redact_url_password(value, _get_replacement(config, key, value))
-
-    # Structured values: redact secret portions inline
-    if finding.layer == "structured_parsing":
-        return _redact_structured(value, config)
-
-    return _get_replacement(config, key, value)
+    return _apply_redaction(finding, key, value, config)
 
 
 def redact_dict(
@@ -124,7 +104,7 @@ def redact_dict(
     mode: Mode = Mode.NORMAL,
     replacement: str = REDACTED,
     extra_keys: tuple[str, ...] = (),
-    safe_keys: frozenset[str] = DEFAULT_SAFE_KEYS,
+    safe_suffixes: tuple[str, ...] = DEFAULT_SAFE_SUFFIXES,
     entropy_threshold: float = 4.5,
 ) -> object:
     """Recursively redact secrets in a dict, list, or nested structure.
@@ -135,10 +115,10 @@ def redact_dict(
         mode=mode,
         replacement=replacement,
         extra_keys=extra_keys,
-        safe_keys=safe_keys,
+        safe_suffixes=safe_suffixes,
         entropy_threshold=entropy_threshold,
     )
-    return _redact_recursive(data, "", config)
+    return _redact_recursive(data, config)
 
 
 def audit_pair(
@@ -147,7 +127,7 @@ def audit_pair(
     *,
     mode: Mode = Mode.NORMAL,
     extra_keys: tuple[str, ...] = (),
-    safe_keys: frozenset[str] = DEFAULT_SAFE_KEYS,
+    safe_suffixes: tuple[str, ...] = DEFAULT_SAFE_SUFFIXES,
     entropy_threshold: float = 4.5,
 ) -> Finding | None:
     """Check a single key-value pair for secrets without redacting.
@@ -160,7 +140,7 @@ def audit_pair(
     config = ScreenConfig(
         mode=mode,
         extra_keys=extra_keys,
-        safe_keys=safe_keys,
+        safe_suffixes=safe_suffixes,
         entropy_threshold=entropy_threshold,
     )
     return _detect(key, value, config)
@@ -171,7 +151,7 @@ def audit_dict(
     *,
     mode: Mode = Mode.NORMAL,
     extra_keys: tuple[str, ...] = (),
-    safe_keys: frozenset[str] = DEFAULT_SAFE_KEYS,
+    safe_suffixes: tuple[str, ...] = DEFAULT_SAFE_SUFFIXES,
     entropy_threshold: float = 4.5,
 ) -> list[Finding]:
     """Recursively audit a dict/list for secrets without redacting.
@@ -181,11 +161,11 @@ def audit_dict(
     config = ScreenConfig(
         mode=mode,
         extra_keys=extra_keys,
-        safe_keys=safe_keys,
+        safe_suffixes=safe_suffixes,
         entropy_threshold=entropy_threshold,
     )
     findings: list[Finding] = []
-    _audit_recursive(data, "", config, findings)
+    _audit_recursive(data, config, findings)
     return findings
 
 
@@ -196,9 +176,9 @@ def _detect(key: str, value: str, config: ScreenConfig) -> Finding | None:
     """Run all detection layers on a single key-value pair."""
 
     # Layer 1: Key-name pattern match
-    matched_pattern = matches_key_pattern(key, config.patterns, config.safe_keys)
+    matched_pattern = matches_key_pattern(key, config.patterns, config.safe_suffixes)
     if matched_pattern is not None:
-        # Special case: URL keys get partial redaction, not full
+        # URL keys get partial redaction, not full
         if key.lower().endswith("_url") and has_url_credentials(value):
             return Finding(
                 key=key,
@@ -258,60 +238,80 @@ def _detect(key: str, value: str, config: ScreenConfig) -> Finding | None:
     return None
 
 
+def _apply_redaction(
+    finding: Finding, key: str, value: str, config: ScreenConfig
+) -> str:
+    """Apply the appropriate redaction strategy based on finding layer.
+
+    Single source of truth for layer-specific redaction behavior.
+    Used by both redact_pair and _redact_recursive.
+    """
+    if finding.layer == "url_credentials":
+        return redact_url_password(value, config.replacement)
+
+    if finding.layer == "structured_parsing":
+        return _redact_structured(value, config)
+
+    return config.replacement
+
+
 def _redact_structured(value: str, config: ScreenConfig) -> str:
     """Redact secret portions within a structured value string.
 
-    Re-parses the value and replaces secret sub-values inline.
-    Falls back to full redaction if inline replacement isn't possible.
+    Re-parses the value and replaces only exact secret values, tracking
+    which values have been replaced to avoid collateral damage when a
+    secret string appears as a substring of a non-secret value.
     """
     pairs = extract_pairs(value)
-    result = value
+    # Collect secret values and their replacements
+    secrets_to_redact: dict[str, str] = {}
     for sub_key, sub_value in pairs:
+        if not sub_value:
+            continue
         sub_finding = _detect(sub_key, sub_value, config)
-        if sub_finding is not None and sub_value:
-            replacement = _get_replacement(config, sub_key, sub_value)
-            result = result.replace(sub_value, replacement)
-    return result
+        if sub_finding is not None:
+            secrets_to_redact[sub_value] = config.replacement
+
+    if not secrets_to_redact:
+        return value
+
+    # Replace longest secrets first to avoid partial matches
+    # when one secret is a substring of another
+    redacted = value
+    for secret in sorted(secrets_to_redact, key=len, reverse=True):
+        redacted = redacted.replace(secret, secrets_to_redact[secret])
+    return redacted
 
 
 def _redact_recursive(
     data: object,
-    prefix: str,
     config: ScreenConfig,
 ) -> object:
     """Recursively walk and redact a nested structure."""
     if isinstance(data, dict):
-        result = {}
+        out: dict[object, object] = {}
         for k, v in data.items():
             key_str = str(k)
             if isinstance(v, str):
                 finding = _detect(key_str, v, config)
                 if finding is not None:
-                    if finding.layer == "url_credentials":
-                        result[k] = redact_url_password(
-                            v, _get_replacement(config, key_str, v)
-                        )
-                    elif finding.layer == "structured_parsing":
-                        result[k] = _redact_structured(v, config)
-                    else:
-                        result[k] = _get_replacement(config, key_str, v)
+                    out[k] = _apply_redaction(finding, key_str, v, config)
                 else:
-                    result[k] = v
+                    out[k] = v
             elif isinstance(v, (dict, list)):
-                result[k] = _redact_recursive(v, key_str, config)
+                out[k] = _redact_recursive(v, config)
             else:
-                result[k] = v
-        return result
+                out[k] = v
+        return out
 
     if isinstance(data, list):
-        return [_redact_recursive(item, prefix, config) for item in data]
+        return [_redact_recursive(item, config) for item in data]
 
     return data
 
 
 def _audit_recursive(
     data: object,
-    prefix: str,
     config: ScreenConfig,
     findings: list[Finding],
 ) -> None:
@@ -324,8 +324,8 @@ def _audit_recursive(
                 if finding is not None:
                     findings.append(finding)
             elif isinstance(v, (dict, list)):
-                _audit_recursive(v, key_str, config, findings)
+                _audit_recursive(v, config, findings)
 
     elif isinstance(data, list):
         for item in data:
-            _audit_recursive(item, prefix, config, findings)
+            _audit_recursive(item, config, findings)

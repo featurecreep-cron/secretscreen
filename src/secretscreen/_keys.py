@@ -50,48 +50,58 @@ DEFAULT_KEY_PATTERNS: tuple[str, ...] = (
     "webhook-secret",
 )
 
-# Keys that should NEVER be redacted, even if they match a pattern.
-# Checked as case-insensitive exact match OR suffix match.
-# Example: TOKEN_URL contains "token" but is not a secret.
-DEFAULT_SAFE_KEYS: frozenset[str] = frozenset({
-    "token_url",
-    "token_uri",
-    "token_endpoint",
+# Suffixes that mark a key as safe even if it matches a pattern.
+# Checked as case-insensitive suffix match against the key name.
+# Example: GF_AUTH_GENERIC_OAUTH_TOKEN_URL ends with "token_url" → safe.
+# Suffix matching catches prefixed variants (PGADMIN_CONFIG_*, GF_AUTH_*, etc.)
+# that exact matching misses.
+DEFAULT_SAFE_SUFFIXES: tuple[str, ...] = (
+    # URL/endpoint suffixes — not secrets, just config pointing to auth endpoints
+    "_url",  # catches TOKEN_URL, PASSWORD_RESET_URL, etc. when key has _url suffix
+    "_uri",
+    "_endpoint",
+    # Type/name metadata
     "token_type",
     "token_name",
+    # Policy/config (not the secret itself)
     "password_policy",
     "password_min_length",
     "password_max_length",
-    "password_reset_url",
+    "password_required",  # e.g. MASTER_PASSWORD_REQUIRED = "False"
+    "password_file",  # path to a file, not the password itself
     "secret_question",
     "secret_question_hint",
-    "authorization_endpoint",
+    # File paths
     "certificate_path",
     "certificate_file",
+    # Cookie metadata
     "cookie_name",
     "cookie_domain",
     "cookie_path",
     "cookie_secure",
     "cookie_samesite",
+    # Session metadata
     "session_key_prefix",
-})
+)
 
 
 def matches_key_pattern(
     key: str,
     patterns: tuple[str, ...] = DEFAULT_KEY_PATTERNS,
-    safe_keys: frozenset[str] = DEFAULT_SAFE_KEYS,
+    safe_suffixes: tuple[str, ...] = DEFAULT_SAFE_SUFFIXES,
 ) -> str | None:
     """Check if a key name matches any secret pattern.
 
     Returns the matched pattern string, or None if no match.
-    Safe keys are excluded even if they match a pattern.
+    Keys ending with a safe suffix are excluded even if they match a pattern.
     """
     key_lower = key.lower()
 
-    # Safe key check: exact match
-    if key_lower in safe_keys:
-        return None
+    # Safe suffix check — catches prefixed variants like
+    # GF_AUTH_GENERIC_OAUTH_TOKEN_URL, PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED
+    for suffix in safe_suffixes:
+        if key_lower.endswith(suffix):
+            return None
 
     for pattern in patterns:
         if pattern in key_lower:

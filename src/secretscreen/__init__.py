@@ -9,10 +9,11 @@ Five detection layers:
 4. URL credential detection — partial redaction of embedded passwords.
 5. Entropy detection — Shannon entropy for machine-generated strings (aggressive mode).
 
-Three modes:
+Two modes:
 - NORMAL: layers 1-4, zero false positives target.
 - AGGRESSIVE: layers 1-5, adds entropy detection.
-- AUDIT: returns structured findings without mutating values.
+
+audit_pair() and audit_dict() return structured findings without mutating values.
 """
 
 from secretscreen._core import (

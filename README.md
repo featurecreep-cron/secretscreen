@@ -30,8 +30,8 @@ redact_dict(env, mode=Mode.AGGRESSIVE)
 findings = audit_dict(env)
 # → [Finding(key="DB_PASSWORD", reason="key_pattern:password", ...)]
 
-# Allowlist false positives
-redact_dict(env, safe_keys=frozenset({"TOKEN_URL", "PASSWORD_POLICY"}))
+# Custom safe suffixes (keys ending with these are never redacted)
+redact_dict(env, safe_suffixes=("_config", "_enabled"))
 ```
 
 ## Detection layers

@@ -4,16 +4,15 @@ Layer 2: parse values as structured data and recursively check extracted keys.
 Supports JSON, Python literals, INI-style, DSN/connection strings, and URL query params.
 
 Security notes:
-- XML parsing uses defusedxml if available, falls back to stdlib with DTD disabled.
-- Parser exceptions are caught and suppressed (they may contain the secret value).
-- Input size is capped before parsing to prevent DoS.
+- Parser exceptions are caught and suppressed (they may contain the secret value
+  in the error message, e.g. json.JSONDecodeError includes the problematic string).
+- Input size is capped before parsing to prevent DoS on adversarial input.
 """
 
 from __future__ import annotations
 
 import ast
 import configparser
-import io
 import json
 import re
 from urllib.parse import parse_qs, urlsplit

@@ -12,6 +12,7 @@ from __future__ import annotations
 import importlib.resources
 import re
 import tomllib
+import warnings
 from dataclasses import dataclass
 
 
@@ -39,7 +40,6 @@ def _load_rules() -> tuple[FormatRule, ...]:
             continue
 
         try:
-            import warnings
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", FutureWarning)
                 compiled = re.compile(regex_str)
