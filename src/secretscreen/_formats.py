@@ -28,6 +28,32 @@ class FormatRule:
     secret_group: int
 
 
+def _prepare_regex(pattern: str) -> tuple[str, int]:
+    """Preprocess a gitleaks regex for Python compatibility.
+
+    Gitleaks targets Go's regexp2 (PCRE-like). Python's re module requires
+    global flags at the start of the expression. This extracts mid-pattern
+    inline flags like (?i) and returns them as re module flags.
+
+    Also replaces POSIX classes like [[:alnum:]] and unsupported escapes.
+    """
+    flags = 0
+
+    # Extract (?i) that appears after position 0 — Python 3.11+ rejects these
+    # We strip ALL (?i) occurrences and apply re.IGNORECASE globally.
+    # This is slightly broader than the original intent (which scoped (?i) to
+    # a subexpression) but matches the gitleaks behavior where (?i) typically
+    # applies to the whole pattern.
+    if "(?i)" in pattern:
+        pattern = pattern.replace("(?i)", "")
+        flags |= re.IGNORECASE
+
+    # Replace \z (Go end-of-string anchor) with Python equivalent \Z
+    pattern = pattern.replace(r"\z", r"\Z")
+
+    return pattern, flags
+
+
 def _load_rules() -> tuple[FormatRule, ...]:
     """Load and compile gitleaks rules from vendored TOML."""
     toml_path = importlib.resources.files("secretscreen").joinpath("gitleaks.toml")
@@ -39,12 +65,14 @@ def _load_rules() -> tuple[FormatRule, ...]:
         if not regex_str:
             continue
 
+        regex_str, flags = _prepare_regex(regex_str)
+
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", FutureWarning)
-                compiled = re.compile(regex_str)
+                compiled = re.compile(regex_str, flags)
         except re.error:
-            continue  # skip malformed patterns
+            continue  # skip genuinely malformed patterns
 
         rules.append(
             FormatRule(

@@ -9,8 +9,8 @@ class TestFormatDetection:
     """Known secret format detection via gitleaks patterns."""
 
     def test_rules_loaded(self) -> None:
-        """Gitleaks TOML loads and compiles."""
-        assert len(RULES) > 100
+        """All 221 gitleaks rules compile — none silently skipped."""
+        assert len(RULES) == 221
 
     @pytest.mark.parametrize(
         ("value", "expected_id"),

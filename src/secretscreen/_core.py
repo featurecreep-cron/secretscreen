@@ -172,7 +172,14 @@ def audit_dict(
 # --- Internal detection logic ---
 
 
-def _detect(key: str, value: str, config: ScreenConfig) -> Finding | None:
+# Maximum recursion depth for structured parsing detection.
+# Prevents stack overflow from crafted nested JSON/Python literals.
+_MAX_DETECT_DEPTH = 3
+
+
+def _detect(
+    key: str, value: str, config: ScreenConfig, _depth: int = 0
+) -> Finding | None:
     """Run all detection layers on a single key-value pair."""
 
     # Layer 1: Key-name pattern match
@@ -201,11 +208,14 @@ def _detect(key: str, value: str, config: ScreenConfig) -> Finding | None:
             detail="URL with embedded credentials",
         )
 
-    # Layer 2: Structured value parsing
-    pairs = extract_pairs(value)
+    # Layer 2: Structured value parsing (depth-limited to prevent recursion bombs)
+    if _depth < _MAX_DETECT_DEPTH:
+        pairs = extract_pairs(value)
+    else:
+        pairs = []
     if pairs:
         for sub_key, sub_value in pairs:
-            sub_finding = _detect(sub_key, sub_value, config)
+            sub_finding = _detect(sub_key, sub_value, config, _depth + 1)
             if sub_finding is not None:
                 return Finding(
                     key=key,

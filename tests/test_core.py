@@ -213,6 +213,33 @@ class TestStructuredRedactionEdgeCases:
         assert "5432" in result
 
 
+class TestRecursionDepthGuard:
+    """Structured parsing recursion is depth-limited."""
+
+    def test_deeply_nested_structured_value_does_not_recurse_forever(self) -> None:
+        """Values nested beyond _MAX_DETECT_DEPTH (3) stop parsing."""
+        import json
+
+        # Build nested JSON: each level embeds the next as a string value
+        inner = json.dumps({"password": "innermost_secret"})
+        for _ in range(5):
+            inner = json.dumps({"config": inner})
+
+        # The outermost key is innocuous — detection depends on structured parsing.
+        # At depth > 3, structured parsing stops, so the innermost secret
+        # may or may not be found depending on exact nesting. The point is
+        # it terminates without stack overflow.
+        result = redact_pair("APP_CONFIG", inner)
+        assert isinstance(result, str)  # didn't crash
+
+    def test_moderate_nesting_still_detects(self) -> None:
+        """Nesting within the depth limit still works."""
+        # Structured value containing a secret key — single level of parsing
+        value = '{"password": "nested_secret", "host": "localhost"}'
+        result = redact_pair("CONFIG", value)
+        assert "nested_secret" not in result
+
+
 class TestRealWorldCases:
     """Scenarios from actual Docker environments."""
 
