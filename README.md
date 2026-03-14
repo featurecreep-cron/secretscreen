@@ -40,7 +40,7 @@ redact_dict(env, safe_suffixes=("_config", "_enabled"))
 
 ## Detection layers
 
-1. **Key-name denylist** — substring match against ~35 known secret key patterns
+1. **Key-name denylist** — substring match against ~30 known secret key patterns
 2. **Structured value parsing** — JSON, Python literals, DSN, INI, URL query params
 3. **Value-format detection** — 222 known formats via vendored [gitleaks](https://github.com/gitleaks/gitleaks) patterns (MIT)
 4. **URL credential detection** — partial redaction of `user:pass@host` URLs

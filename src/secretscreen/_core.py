@@ -169,8 +169,6 @@ def audit_dict(
     return findings
 
 
-# --- Internal detection logic ---
-
 
 # Maximum recursion depth for structured parsing detection.
 # Prevents stack overflow from crafted nested JSON/Python literals.
