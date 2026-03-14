@@ -81,7 +81,7 @@ def redact_pair(
     Returns the replacement string if secret, or the original value.
     """
     if not isinstance(value, str) or not value:
-        return value  # type: ignore[return-value]
+        return value
 
     config = ScreenConfig(
         mode=mode,

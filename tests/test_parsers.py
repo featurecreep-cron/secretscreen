@@ -1,6 +1,5 @@
 """Tests for structured value parsing (Layer 2)."""
 
-import pytest
 
 from secretscreen._parsers import extract_pairs
 

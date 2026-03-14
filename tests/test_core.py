@@ -1,6 +1,5 @@
 """Tests for core orchestration — redact_pair, redact_dict, audit_pair, audit_dict."""
 
-import pytest
 
 from secretscreen import Finding, Mode, audit_dict, audit_pair, redact_dict, redact_pair
 
