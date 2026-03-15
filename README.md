@@ -1,6 +1,8 @@
 # secretscreen
 
 [![CI](https://github.com/featurecreep-cron/secretscreen/actions/workflows/ci.yml/badge.svg)](https://github.com/featurecreep-cron/secretscreen/actions/workflows/ci.yml)
+[![Codecov](https://codecov.io/gh/featurecreep-cron/secretscreen/graph/badge.svg)](https://codecov.io/gh/featurecreep-cron/secretscreen)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/featurecreep-cron/secretscreen/badge)](https://scorecard.dev/viewer/?uri=github.com/featurecreep-cron/secretscreen)
 [![License: MIT](https://img.shields.io/github/license/featurecreep-cron/secretscreen)](https://github.com/featurecreep-cron/secretscreen/blob/main/LICENSE)
 [![Release](https://img.shields.io/github/v/release/featurecreep-cron/secretscreen)](https://github.com/featurecreep-cron/secretscreen/releases)
 [![Python](https://img.shields.io/python/required-version-toml?tomlFilePath=https%3A%2F%2Fraw.githubusercontent.com%2Ffeaturecreep-cron%2Fsecretscreen%2Fmain%2Fpyproject.toml)](https://www.python.org/downloads/)
@@ -48,6 +50,14 @@ redact_dict(env, safe_suffixes=("_config", "_enabled"))
 3. **Value-format detection** — 222 known formats via vendored [gitleaks](https://github.com/gitleaks/gitleaks) patterns (MIT)
 4. **URL credential detection** — partial redaction of `user:pass@host` URLs
 5. **Entropy detection** — Shannon entropy for machine-generated strings (aggressive mode only)
+
+## Contributing
+
+Bug reports and pull requests welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Support
+
+If you find secretscreen useful, consider [buying us a coffee](https://buymeacoffee.com/featurecreep).
 
 ## License
 
