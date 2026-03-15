@@ -1,8 +1,11 @@
 # secretscreen
 
 [![CI](https://github.com/featurecreep-cron/secretscreen/actions/workflows/ci.yml/badge.svg)](https://github.com/featurecreep-cron/secretscreen/actions/workflows/ci.yml)
-[![Python 3.11+](https://img.shields.io/python/required-version-toml?tomlFilePath=https%3A%2F%2Fraw.githubusercontent.com%2Ffeaturecreep-cron%2Fsecretscreen%2Fmain%2Fpyproject.toml)](https://pypi.org/project/secretscreen/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/github/license/featurecreep-cron/secretscreen)](https://github.com/featurecreep-cron/secretscreen/blob/main/LICENSE)
+[![Release](https://img.shields.io/github/v/release/featurecreep-cron/secretscreen)](https://github.com/featurecreep-cron/secretscreen/releases)
+[![Python](https://img.shields.io/python/required-version-toml?tomlFilePath=https%3A%2F%2Fraw.githubusercontent.com%2Ffeaturecreep-cron%2Fsecretscreen%2Fmain%2Fpyproject.toml)](https://www.python.org/downloads/)
+[![PyPI](https://img.shields.io/pypi/v/secretscreen)](https://pypi.org/project/secretscreen/)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 
 Detect and redact secrets in key-value pairs, dicts, and environment variables.
 
