@@ -169,15 +169,12 @@ def audit_dict(
     return findings
 
 
-
 # Maximum recursion depth for structured parsing detection.
 # Prevents stack overflow from crafted nested JSON/Python literals.
 _MAX_DETECT_DEPTH = 3
 
 
-def _detect(
-    key: str, value: str, config: ScreenConfig, _depth: int = 0
-) -> Finding | None:
+def _detect(key: str, value: str, config: ScreenConfig, _depth: int = 0) -> Finding | None:
     """Run all detection layers on a single key-value pair."""
 
     # Layer 1: Key-name pattern match
@@ -246,9 +243,7 @@ def _detect(
     return None
 
 
-def _apply_redaction(
-    finding: Finding, key: str, value: str, config: ScreenConfig
-) -> str:
+def _apply_redaction(finding: Finding, key: str, value: str, config: ScreenConfig) -> str:
     """Apply the appropriate redaction strategy based on finding layer.
 
     Single source of truth for layer-specific redaction behavior.

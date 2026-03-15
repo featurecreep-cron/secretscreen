@@ -40,12 +40,14 @@ def redact_url_password(value: str, replacement: str = _DEFAULT_REPLACEMENT) -> 
         port_str = f":{parsed.port}" if parsed.port else ""
         new_netloc = f"{user}:{replacement}@{host}{port_str}"
 
-        return urlunsplit((
-            parsed.scheme,
-            new_netloc,
-            parsed.path,
-            parsed.query,
-            parsed.fragment,
-        ))
+        return urlunsplit(
+            (
+                parsed.scheme,
+                new_netloc,
+                parsed.path,
+                parsed.query,
+                parsed.fragment,
+            )
+        )
     except (ValueError, AttributeError):
         return _DEFAULT_REPLACEMENT

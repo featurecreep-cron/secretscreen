@@ -1,6 +1,5 @@
 """Tests for core orchestration — redact_pair, redact_dict, audit_pair, audit_dict."""
 
-
 from secretscreen import Finding, Mode, audit_dict, audit_pair, redact_dict, redact_pair
 
 
@@ -28,7 +27,8 @@ class TestRedactPair:
 
     def test_custom_safe_suffixes(self) -> None:
         result = redact_pair(
-            "MY_TOKEN_CONFIG", "value",
+            "MY_TOKEN_CONFIG",
+            "value",
             safe_suffixes=("_config",),
         )
         assert result == "value"
@@ -89,32 +89,38 @@ class TestRedactDict:
         assert result == {"password": "[REDACTED]", "host": "localhost"}
 
     def test_nested_dict(self) -> None:
-        result = redact_dict({
-            "db": {"password": "secret", "host": "localhost"},
-            "app": "myapp",
-        })
+        result = redact_dict(
+            {
+                "db": {"password": "secret", "host": "localhost"},
+                "app": "myapp",
+            }
+        )
         assert result["db"]["password"] == "[REDACTED]"  # type: ignore[index]
         assert result["db"]["host"] == "localhost"  # type: ignore[index]
         assert result["app"] == "myapp"  # type: ignore[index]
 
     def test_list_of_dicts(self) -> None:
-        result = redact_dict([
-            {"name": "alice", "api_key": "abc123"},
-            {"name": "bob", "token": "xyz789"},
-        ])
+        result = redact_dict(
+            [
+                {"name": "alice", "api_key": "abc123"},
+                {"name": "bob", "token": "xyz789"},
+            ]
+        )
         assert isinstance(result, list)
         assert result[0]["api_key"] == "[REDACTED]"  # type: ignore[index]
         assert result[1]["token"] == "[REDACTED]"  # type: ignore[index]
         assert result[0]["name"] == "alice"  # type: ignore[index]
 
     def test_deeply_nested(self) -> None:
-        result = redact_dict({
-            "level1": {
-                "level2": {
-                    "level3": {"secret_key": "deep_secret"},
+        result = redact_dict(
+            {
+                "level1": {
+                    "level2": {
+                        "level3": {"secret_key": "deep_secret"},
+                    },
                 },
-            },
-        })
+            }
+        )
         assert result["level1"]["level2"]["level3"]["secret_key"] == "[REDACTED]"  # type: ignore[index]
 
     def test_does_not_mutate_input(self) -> None:
@@ -123,12 +129,14 @@ class TestRedactDict:
         assert original["password"] == "secret"
 
     def test_non_string_values_preserved(self) -> None:
-        result = redact_dict({
-            "port": 5432,
-            "debug": True,
-            "timeout": None,
-            "password": "secret",
-        })
+        result = redact_dict(
+            {
+                "port": 5432,
+                "debug": True,
+                "timeout": None,
+                "password": "secret",
+            }
+        )
         assert result["port"] == 5432  # type: ignore[index]
         assert result["debug"] is True  # type: ignore[index]
         assert result["timeout"] is None  # type: ignore[index]
@@ -164,11 +172,13 @@ class TestAuditDict:
     """Dict auditing."""
 
     def test_finds_multiple_secrets(self) -> None:
-        findings = audit_dict({
-            "password": "secret",
-            "host": "localhost",
-            "api_key": "abc123",
-        })
+        findings = audit_dict(
+            {
+                "password": "secret",
+                "host": "localhost",
+                "api_key": "abc123",
+            }
+        )
         assert len(findings) == 2
         keys = {f.key for f in findings}
         assert "password" in keys
@@ -178,10 +188,12 @@ class TestAuditDict:
         assert audit_dict({}) == []
 
     def test_nested_findings(self) -> None:
-        findings = audit_dict({
-            "db": {"password": "secret"},
-            "cache": {"host": "localhost"},
-        })
+        findings = audit_dict(
+            {
+                "db": {"password": "secret"},
+                "cache": {"host": "localhost"},
+            }
+        )
         assert len(findings) == 1
         assert findings[0].key == "password"
 
