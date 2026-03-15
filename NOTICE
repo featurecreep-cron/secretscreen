@@ -1,0 +1,4 @@
+This package vendors pattern data from the gitleaks project
+(https://github.com/gitleaks/gitleaks), which is MIT-licensed.
+
+See src/secretscreen/gitleaks.toml for the vendored rules.
