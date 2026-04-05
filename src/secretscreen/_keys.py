@@ -95,18 +95,16 @@ def matches_key_pattern(
     Returns the matched pattern string, or None if no match.
     Keys ending with a safe suffix are excluded even if they match a pattern.
 
-    Pattern check runs first (common case: no match → early return).
-    Safe suffix check only runs when a pattern matches, avoiding
-    unnecessary suffix scans on the majority of non-secret keys.
+    Safe suffix check runs once (not per-pattern). Pattern check runs first
+    (common case: no match → early return).
     """
     key_lower = key.lower()
 
+    # Check safe suffix once upfront
+    is_safe = any(key_lower.endswith(suffix) for suffix in safe_suffixes)
+
     for pattern in patterns:
         if pattern in key_lower:
-            # Only check safe suffixes when we have a match
-            for suffix in safe_suffixes:
-                if key_lower.endswith(suffix):
-                    return None
-            return pattern
+            return None if is_safe else pattern
 
     return None

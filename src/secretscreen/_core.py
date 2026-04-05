@@ -39,7 +39,6 @@ class Finding:
     reason: str
     layer: str
     detail: str = ""
-    _parsed_pairs: tuple[tuple[str, str], ...] | None = None
 
 
 @dataclass
@@ -92,11 +91,16 @@ def redact_pair(
         entropy_threshold=entropy_threshold,
     )
 
-    finding = _detect(key, value, config)
-    if finding is None:
+    result = _detect(key, value, config)
+    if result is None:
         return value
 
-    return _apply_redaction(finding, key, value, config)
+    if isinstance(result, tuple):
+        finding, cached_pairs = result
+    else:
+        finding, cached_pairs = result, None
+
+    return _apply_redaction(finding, key, value, config, cached_pairs)
 
 
 def redact_dict(
@@ -144,7 +148,10 @@ def audit_pair(
         safe_suffixes=safe_suffixes,
         entropy_threshold=entropy_threshold,
     )
-    return _detect(key, value, config)
+    result = _detect(key, value, config)
+    if isinstance(result, tuple):
+        return result[0]
+    return result
 
 
 def audit_dict(
@@ -174,9 +181,23 @@ def audit_dict(
 # Prevents stack overflow from crafted nested JSON/Python literals.
 _MAX_DETECT_DEPTH = 3
 
+# Maximum value length for detection. Values beyond this are likely data dumps,
+# not config values. Prevents DoS via large inputs hitting 221+ regex patterns.
+_MAX_DETECT_LENGTH = 1_048_576  # 1 MB
 
-def _detect(key: str, value: str, config: ScreenConfig, _depth: int = 0) -> Finding | None:
-    """Run all detection layers on a single key-value pair."""
+
+def _detect(
+    key: str, value: str, config: ScreenConfig, _depth: int = 0
+) -> Finding | None | tuple[Finding, list[tuple[str, str]]]:
+    """Run all detection layers on a single key-value pair.
+
+    When called internally (from _redact_recursive/_apply_redaction), returns
+    a (Finding, cached_pairs) tuple for structured parsing hits so that
+    _redact_structured can reuse parsed pairs without re-parsing.
+    The public API (audit_pair) strips the tuple before returning.
+    """
+    if len(value) > _MAX_DETECT_LENGTH:
+        return None
 
     # Layer 1: Key-name pattern match
     matched_pattern = matches_key_pattern(key, config.patterns, config.safe_suffixes)
@@ -211,15 +232,16 @@ def _detect(key: str, value: str, config: ScreenConfig, _depth: int = 0) -> Find
         pairs = []
     if pairs:
         for sub_key, sub_value in pairs:
-            sub_finding = _detect(sub_key, sub_value, config, _depth + 1)
+            sub_result = _detect(sub_key, sub_value, config, _depth + 1)
+            sub_finding = sub_result[0] if isinstance(sub_result, tuple) else sub_result
             if sub_finding is not None:
-                return Finding(
+                finding = Finding(
                     key=key,
                     reason=f"structured:{sub_key}={sub_finding.reason}",
                     layer="structured_parsing",
                     detail=f"Found secret in parsed structure: {sub_key}",
-                    _parsed_pairs=tuple(pairs),
                 )
+                return (finding, pairs)
 
     # Layer 3: Value-format detection (gitleaks patterns)
     format_match = matches_known_format(value)
@@ -245,7 +267,13 @@ def _detect(key: str, value: str, config: ScreenConfig, _depth: int = 0) -> Find
     return None
 
 
-def _apply_redaction(finding: Finding, key: str, value: str, config: ScreenConfig) -> str:
+def _apply_redaction(
+    finding: Finding,
+    key: str,
+    value: str,
+    config: ScreenConfig,
+    cached_pairs: list[tuple[str, str]] | None = None,
+) -> str:
     """Apply the appropriate redaction strategy based on finding layer.
 
     Single source of truth for layer-specific redaction behavior.
@@ -255,7 +283,7 @@ def _apply_redaction(finding: Finding, key: str, value: str, config: ScreenConfi
         return redact_url_password(value, config.replacement)
 
     if finding.layer == "structured_parsing":
-        return _redact_structured(value, config, finding._parsed_pairs)
+        return _redact_structured(value, config, cached_pairs)
 
     return config.replacement
 
@@ -263,7 +291,7 @@ def _apply_redaction(finding: Finding, key: str, value: str, config: ScreenConfi
 def _redact_structured(
     value: str,
     config: ScreenConfig,
-    cached_pairs: tuple[tuple[str, str], ...] | None = None,
+    cached_pairs: list[tuple[str, str]] | None = None,
 ) -> str:
     """Redact secret portions within a structured value string.
 
@@ -272,7 +300,7 @@ def _redact_structured(
     which values have been replaced to avoid collateral damage when a
     secret string appears as a substring of a non-secret value.
     """
-    pairs = list(cached_pairs) if cached_pairs else extract_pairs(value)
+    pairs = cached_pairs if cached_pairs else extract_pairs(value)
     # Collect secret values and their replacements
     secrets_to_redact: dict[str, str] = {}
     for sub_key, sub_value in pairs:
@@ -293,29 +321,40 @@ def _redact_structured(
     return redacted
 
 
+_MAX_RECURSIVE_DEPTH = 100
+
+
 def _redact_recursive(
     data: object,
     config: ScreenConfig,
+    _depth: int = 0,
 ) -> object:
     """Recursively walk and redact a nested structure."""
+    if _depth >= _MAX_RECURSIVE_DEPTH:
+        return data
+
     if isinstance(data, dict):
         out: dict[object, object] = {}
         for k, v in data.items():
             key_str = str(k)
             if isinstance(v, str):
-                finding = _detect(key_str, v, config)
-                if finding is not None:
-                    out[k] = _apply_redaction(finding, key_str, v, config)
+                result = _detect(key_str, v, config)
+                if result is not None:
+                    if isinstance(result, tuple):
+                        finding, cached_pairs = result
+                    else:
+                        finding, cached_pairs = result, None
+                    out[k] = _apply_redaction(finding, key_str, v, config, cached_pairs)
                 else:
                     out[k] = v
             elif isinstance(v, (dict, list)):
-                out[k] = _redact_recursive(v, config)
+                out[k] = _redact_recursive(v, config, _depth + 1)
             else:
                 out[k] = v
         return out
 
     if isinstance(data, list):
-        return [_redact_recursive(item, config) for item in data]
+        return [_redact_recursive(item, config, _depth + 1) for item in data]
 
     return data
 
@@ -324,18 +363,23 @@ def _audit_recursive(
     data: object,
     config: ScreenConfig,
     findings: list[Finding],
+    _depth: int = 0,
 ) -> None:
     """Recursively walk and audit a nested structure."""
+    if _depth >= _MAX_RECURSIVE_DEPTH:
+        return
+
     if isinstance(data, dict):
         for k, v in data.items():
             key_str = str(k)
             if isinstance(v, str):
-                finding = _detect(key_str, v, config)
+                result = _detect(key_str, v, config)
+                finding = result[0] if isinstance(result, tuple) else result
                 if finding is not None:
                     findings.append(finding)
             elif isinstance(v, (dict, list)):
-                _audit_recursive(v, config, findings)
+                _audit_recursive(v, config, findings, _depth + 1)
 
     elif isinstance(data, list):
         for item in data:
-            _audit_recursive(item, config, findings)
+            _audit_recursive(item, config, findings, _depth + 1)

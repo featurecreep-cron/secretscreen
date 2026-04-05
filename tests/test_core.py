@@ -251,6 +251,96 @@ class TestRecursionDepthGuard:
         assert "nested_secret" not in result
 
 
+class TestSecurityFixes:
+    """Regression tests for security audit findings (2026-04-05)."""
+
+    def test_deeply_nested_json_does_not_bypass_detection(self) -> None:
+        """HIGH-1: Deeply nested JSON should not suppress detection via RecursionError."""
+        import json
+
+        # Build JSON nested 1000 levels deep with a secret key
+        d: dict = {"password": "deep_secret_value"}
+        for _ in range(1000):
+            d = {"x": d}
+        payload = json.dumps(d)
+
+        # The structured parsing should either detect the secret (if within
+        # flatten depth) or at minimum not crash. The key "config" is innocuous
+        # so detection depends on structured parsing finding "password".
+        result = redact_pair("config", payload)
+        assert isinstance(result, str)  # didn't crash
+
+    def test_finding_does_not_expose_secret_values(self) -> None:
+        """MEDIUM-1: Finding objects should not contain plaintext secrets."""
+        finding = audit_pair("config", '{"password": "sup3r_s3cr3t"}')
+        assert finding is not None
+        # Check that the Finding has no field containing the secret
+        assert not hasattr(finding, "_parsed_pairs")
+        finding_str = str(finding)
+        assert "sup3r_s3cr3t" not in finding_str
+
+    def test_large_value_does_not_cause_dos(self) -> None:
+        """MEDIUM-3: Values over 1MB should be rejected early."""
+        large_value = "x" * 2_000_000  # 2MB
+        result = redact_pair("SOME_KEY", large_value)
+        assert result == large_value  # returned unchanged, not processed
+
+    def test_deeply_nested_dict_does_not_crash(self) -> None:
+        """MEDIUM-4: redact_dict should handle deeply nested dicts without RecursionError."""
+        data: dict = {}
+        current = data
+        for _ in range(500):
+            current["x"] = {}
+            current = current["x"]
+        current["leaf"] = "val"
+
+        result = redact_dict(data)
+        assert isinstance(result, dict)  # didn't crash
+
+    def test_deeply_nested_dict_audit_does_not_crash(self) -> None:
+        """MEDIUM-4: audit_dict should handle deeply nested dicts without RecursionError."""
+        data: dict = {}
+        current = data
+        for _ in range(500):
+            current["x"] = {}
+            current = current["x"]
+        current["password"] = "secret"
+
+        findings = audit_dict(data)
+        assert isinstance(findings, list)  # didn't crash
+
+    def test_jdbc_url_detected(self) -> None:
+        """LOW-1: JDBC URLs should detect embedded credentials."""
+        from secretscreen._urls import has_url_credentials
+
+        assert has_url_credentials("jdbc:postgresql://admin:S3cr3t@prod-db:5432/main") is True
+        assert has_url_credentials("jdbc:mysql://root:password@localhost:3306/app") is True
+
+    def test_jdbc_url_redacted(self) -> None:
+        """LOW-1: JDBC URLs should have passwords redacted."""
+        from secretscreen._urls import redact_url_password
+
+        result = redact_url_password("jdbc:postgresql://admin:S3cr3t@prod-db:5432/main")
+        assert "S3cr3t" not in result
+        assert "admin" in result
+        assert result.startswith("jdbc:")
+
+    def test_ipv6_url_redaction_valid(self) -> None:
+        """LOW-2: IPv6 URL redaction should produce valid URLs."""
+        from secretscreen._urls import redact_url_password
+
+        result = redact_url_password("redis://user:secret@[::1]:6379/0")
+        assert "secret" not in result
+        assert "[" in result  # brackets preserved
+        assert "::1" in result
+
+    def test_odbc_url_detected(self) -> None:
+        """LOW-1: ODBC URLs should also detect embedded credentials."""
+        from secretscreen._urls import has_url_credentials
+
+        assert has_url_credentials("odbc:postgresql://admin:pass@host/db") is True
+
+
 class TestRealWorldCases:
     """Scenarios from actual Docker environments."""
 

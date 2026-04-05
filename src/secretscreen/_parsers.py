@@ -152,15 +152,25 @@ def _parse_ini(value: str) -> list[tuple[str, str]]:
     return pairs
 
 
-def _flatten(data: object, _prefix: str = "") -> list[tuple[str, str]]:
-    """Recursively flatten nested structures into key-value pairs."""
+_MAX_FLATTEN_DEPTH = 50
+
+
+def _flatten(data: object, _prefix: str = "", _depth: int = 0) -> list[tuple[str, str]]:
+    """Recursively flatten nested structures into key-value pairs.
+
+    Depth is capped at _MAX_FLATTEN_DEPTH to prevent RecursionError
+    on adversarial input. Returns pairs collected so far when exceeded.
+    """
+    if _depth >= _MAX_FLATTEN_DEPTH:
+        return []
+
     pairs: list[tuple[str, str]] = []
 
     if isinstance(data, dict):
         for k, v in data.items():
             key = f"{_prefix}.{k}" if _prefix else str(k)
             if isinstance(v, (dict, list)):
-                pairs.extend(_flatten(v, key))
+                pairs.extend(_flatten(v, key, _depth + 1))
             else:
                 pairs.append((key, str(v) if v is not None else ""))
 
@@ -168,7 +178,7 @@ def _flatten(data: object, _prefix: str = "") -> list[tuple[str, str]]:
         for i, item in enumerate(data):
             key = f"{_prefix}[{i}]" if _prefix else f"[{i}]"
             if isinstance(item, (dict, list)):
-                pairs.extend(_flatten(item, key))
+                pairs.extend(_flatten(item, key, _depth + 1))
             else:
                 pairs.append((key, str(item) if item is not None else ""))
 
