@@ -39,6 +39,7 @@ class Finding:
     reason: str
     layer: str
     detail: str = ""
+    _parsed_pairs: tuple[tuple[str, str], ...] | None = None
 
 
 @dataclass
@@ -217,6 +218,7 @@ def _detect(key: str, value: str, config: ScreenConfig, _depth: int = 0) -> Find
                     reason=f"structured:{sub_key}={sub_finding.reason}",
                     layer="structured_parsing",
                     detail=f"Found secret in parsed structure: {sub_key}",
+                    _parsed_pairs=tuple(pairs),
                 )
 
     # Layer 3: Value-format detection (gitleaks patterns)
@@ -253,19 +255,24 @@ def _apply_redaction(finding: Finding, key: str, value: str, config: ScreenConfi
         return redact_url_password(value, config.replacement)
 
     if finding.layer == "structured_parsing":
-        return _redact_structured(value, config)
+        return _redact_structured(value, config, finding._parsed_pairs)
 
     return config.replacement
 
 
-def _redact_structured(value: str, config: ScreenConfig) -> str:
+def _redact_structured(
+    value: str,
+    config: ScreenConfig,
+    cached_pairs: tuple[tuple[str, str], ...] | None = None,
+) -> str:
     """Redact secret portions within a structured value string.
 
-    Re-parses the value and replaces only exact secret values, tracking
+    Uses pre-parsed pairs from detection when available to avoid
+    re-parsing the value. Replaces only exact secret values, tracking
     which values have been replaced to avoid collateral damage when a
     secret string appears as a substring of a non-secret value.
     """
-    pairs = extract_pairs(value)
+    pairs = list(cached_pairs) if cached_pairs else extract_pairs(value)
     # Collect secret values and their replacements
     secrets_to_redact: dict[str, str] = {}
     for sub_key, sub_value in pairs:
