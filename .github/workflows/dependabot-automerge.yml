@@ -23,7 +23,6 @@ jobs:
         with:
           github-token: ${{ steps.generate_token.outputs.token }}
       - name: Enable auto-merge
-        run: gh pr merge --auto --rebase "$PR_URL"
         env:
-          PR_URL: ${{ github.event.pull_request.html_url }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.generate_token.outputs.token }}
+        run: gh pr merge --auto --squash "${{ github.event.pull_request.number }}" --repo "${{ github.repository }}"
