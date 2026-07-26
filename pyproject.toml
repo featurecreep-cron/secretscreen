@@ -25,7 +25,9 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0", "pytest-cov>=5.0", "ruff>=0.4", "mypy>=1.10"]
+# Linters gate CI, so they carry upper bounds: an unpinned ruff minor bump
+# (0.15 -> 0.16) silently changed formatting rules and broke an unrelated PR.
+dev = ["pytest>=7.0", "pytest-cov>=5.0", "ruff>=0.4,<0.17", "mypy>=1.10,<3"]
 
 [project.urls]
 Homepage = "https://github.com/featurecreep-cron/secretscreen"
