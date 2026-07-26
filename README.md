@@ -24,8 +24,8 @@ pip install secretscreen
 from secretscreen import redact_pair, redact_dict, audit_dict, Mode
 
 # Single pair
-redact_pair("DB_PASSWORD", "hunter2")        # → "[REDACTED]"
-redact_pair("APP_NAME", "myapp")             # → "myapp"
+redact_pair("DB_PASSWORD", "hunter2")  # → "[REDACTED]"
+redact_pair("APP_NAME", "myapp")  # → "myapp"
 
 # Dict with recursion
 redact_dict({"db": {"password": "x", "host": "localhost"}})
