@@ -14,9 +14,20 @@ Best-effort defense-in-depth. Not a security boundary.
 
 ## Install
 
+As a library:
+
 ```
 pip install secretscreen
 ```
+
+As a command-line tool — `pipx` or `uv` keep it in its own environment and put `secretscreen` on your PATH everywhere, rather than only in whichever venv is active:
+
+```
+pipx install secretscreen
+uv tool install secretscreen
+```
+
+Zero dependencies, Python 3.11+.
 
 ## Quick start
 
