@@ -91,14 +91,9 @@ def redact_pair(
         entropy_threshold=entropy_threshold,
     )
 
-    result = _detect(key, value, config)
-    if result is None:
+    finding, cached_pairs = _detect_with_pairs(key, value, config)
+    if finding is None:
         return value
-
-    if isinstance(result, tuple):
-        finding, cached_pairs = result
-    else:
-        finding, cached_pairs = result, None
 
     return _apply_redaction(finding, key, value, config, cached_pairs)
 
@@ -148,10 +143,7 @@ def audit_pair(
         safe_suffixes=safe_suffixes,
         entropy_threshold=entropy_threshold,
     )
-    result = _detect(key, value, config)
-    if isinstance(result, tuple):
-        return result[0]
-    return result
+    return _detect(key, value, config)
 
 
 def audit_dict(
@@ -191,15 +183,22 @@ _MAX_DETECT_DEPTH = 3
 _MAX_DETECT_LENGTH = 1_048_576  # 1 MB
 
 
-def _detect(
-    key: str, value: str, config: ScreenConfig, _depth: int = 0
-) -> Finding | None | tuple[Finding, list[tuple[str, str]]]:
+def _detect(key: str, value: str, config: ScreenConfig, _depth: int = 0) -> Finding | None:
     """Run all detection layers on a single key-value pair.
 
-    When called internally (from _redact_recursive/_apply_redaction), returns
-    a (Finding, cached_pairs) tuple for structured parsing hits so that
-    _redact_structured can reuse parsed pairs without re-parsing.
-    The public API (audit_pair) strips the tuple before returning.
+    For callers that only need the verdict. Redaction paths should use
+    _detect_with_pairs to avoid re-parsing structured values.
+    """
+    return _detect_with_pairs(key, value, config, _depth)[0]
+
+
+def _detect_with_pairs(
+    key: str, value: str, config: ScreenConfig, _depth: int = 0
+) -> tuple[Finding | None, list[tuple[str, str]] | None]:
+    """Run all detection layers, also returning parsed pairs on a structured hit.
+
+    _redact_structured reuses those pairs instead of parsing the value a second
+    time. The pairs are None for every other layer and for a clean value.
     """
     oversized = len(value) > _MAX_DETECT_LENGTH
 
@@ -210,29 +209,38 @@ def _detect(
         # URL keys get partial redaction, not full. Skipped when oversized:
         # partial redaction has to scan the value, and a 50 MB URL is not a URL.
         if not oversized and key.lower().endswith("_url") and has_url_credentials(value):
-            return Finding(
+            return (
+                Finding(
+                    key=key,
+                    reason=f"key_pattern:{matched_pattern}",
+                    layer="url_credentials",
+                    detail="URL with embedded credentials",
+                ),
+                None,
+            )
+        return (
+            Finding(
                 key=key,
                 reason=f"key_pattern:{matched_pattern}",
-                layer="url_credentials",
-                detail="URL with embedded credentials",
-            )
-        return Finding(
-            key=key,
-            reason=f"key_pattern:{matched_pattern}",
-            layer="key_pattern",
+                layer="key_pattern",
+            ),
+            None,
         )
 
     # Layers 2-5 all scan the value itself. Stop here for oversized input.
     if oversized:
-        return None
+        return (None, None)
 
     # Layer 4: URL credential detection (even without key pattern match)
     if has_url_credentials(value):
-        return Finding(
-            key=key,
-            reason="url_credentials",
-            layer="url_credentials",
-            detail="URL with embedded credentials",
+        return (
+            Finding(
+                key=key,
+                reason="url_credentials",
+                layer="url_credentials",
+                detail="URL with embedded credentials",
+            ),
+            None,
         )
 
     # Layer 2: Structured value parsing (depth-limited to prevent recursion bombs)
@@ -242,8 +250,7 @@ def _detect(
         pairs = []
     if pairs:
         for sub_key, sub_value in pairs:
-            sub_result = _detect(sub_key, sub_value, config, _depth + 1)
-            sub_finding = sub_result[0] if isinstance(sub_result, tuple) else sub_result
+            sub_finding = _detect(sub_key, sub_value, config, _depth + 1)
             if sub_finding is not None:
                 finding = Finding(
                     key=key,
@@ -256,25 +263,31 @@ def _detect(
     # Layer 3: Value-format detection (gitleaks patterns)
     format_match = matches_known_format(value)
     if format_match is not None:
-        return Finding(
-            key=key,
-            reason=f"format:{format_match.id}",
-            layer="format_detection",
-            detail=format_match.description,
+        return (
+            Finding(
+                key=key,
+                reason=f"format:{format_match.id}",
+                layer="format_detection",
+                detail=format_match.description,
+            ),
+            None,
         )
 
     # Layer 5: Entropy detection (aggressive mode only)
     if config.mode == Mode.AGGRESSIVE:
         entropy = looks_like_secret(value, config.entropy_threshold)
         if entropy is not None:
-            return Finding(
-                key=key,
-                reason=f"entropy:{entropy:.2f}",
-                layer="entropy",
-                detail=f"Shannon entropy {entropy:.2f} bits/char exceeds threshold",
+            return (
+                Finding(
+                    key=key,
+                    reason=f"entropy:{entropy:.2f}",
+                    layer="entropy",
+                    detail=f"Shannon entropy {entropy:.2f} bits/char exceeds threshold",
+                ),
+                None,
             )
 
-    return None
+    return (None, None)
 
 
 def _apply_redaction(
@@ -348,12 +361,8 @@ def _redact_recursive(
         for k, v in data.items():
             key_str = str(k)
             if isinstance(v, str):
-                result = _detect(key_str, v, config)
-                if result is not None:
-                    if isinstance(result, tuple):
-                        finding, cached_pairs = result
-                    else:
-                        finding, cached_pairs = result, None
+                finding, cached_pairs = _detect_with_pairs(key_str, v, config)
+                if finding is not None:
                     out[k] = _apply_redaction(finding, key_str, v, config, cached_pairs)
                 else:
                     out[k] = v
@@ -383,8 +392,7 @@ def _audit_recursive(
         for k, v in data.items():
             key_str = str(k)
             if isinstance(v, str):
-                result = _detect(key_str, v, config)
-                finding = result[0] if isinstance(result, tuple) else result
+                finding = _detect(key_str, v, config)
                 if finding is not None:
                     findings.append(finding)
             elif isinstance(v, (dict, list)):
