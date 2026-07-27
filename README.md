@@ -42,6 +42,38 @@ findings = audit_dict(env)
 redact_dict(env, safe_suffixes=("_config", "_enabled"))
 ```
 
+## Command line
+
+The library only helps Python callers. The CLI covers the shell side — `docker exec`, Makefiles, CI logs, anything you are about to paste somewhere.
+
+```
+secretscreen tandoor.env                    # redact and print, cat-like
+docker exec app env | secretscreen          # scrub a stream before it hits your terminal
+secretscreen --audit config.json            # findings only, no values, exit 1 if any
+```
+
+```
+secretscreen [FILE...]              reads stdin when FILE is omitted or '-'
+  --audit                           report findings without values; exit 1 if any
+  --format env|json|ini|dsn|auto    default: auto-detect from extension, then content
+  --aggressive                      add entropy detection; more false positives
+  --replacement TEXT                default: [REDACTED]
+```
+
+Redaction is structural, not line-based: it parses the format, so it catches `DB_PASSWORD=hunter2` on the key name and rewrites `postgres://admin:s3cr3t@host/db` to `postgres://admin:[REDACTED]@host/db` without destroying the rest of the line. Comments, blank lines, quoting, `export` prefixes, INI sections and `:` separators all survive the round trip.
+
+**What the exit code means:**
+
+| Code | Meaning |
+|------|---------|
+| 0 | Everything was parsed and screened |
+| 1 | `--audit` found secrets |
+| 2 | Something could not be parsed or read — see stderr |
+
+That third case is the one that matters. This is best-effort defense-in-depth, and a cat-replacement is exactly the tool people stop thinking about, so the CLI never prints unparsed content verbatim: a line it cannot structure is replaced with the redaction token, named on stderr, and turns the exit code non-zero. The same applies to values above the 1 MB detection cap — they are reported as unscanned rather than passed off as clean.
+
+If you are scanning a git repository rather than config-shaped data, use [gitleaks](https://github.com/gitleaks/gitleaks) instead. That is a different job.
+
 ## Detection layers
 
 1. **Key-name denylist** — substring match against ~30 known secret key patterns
