@@ -280,10 +280,51 @@ class TestSecurityFixes:
         assert "sup3r_s3cr3t" not in finding_str
 
     def test_large_value_does_not_cause_dos(self) -> None:
-        """MEDIUM-3: Values over 1MB should be rejected early."""
+        """MEDIUM-3: Values over 1MB skip the value-scanning layers."""
         large_value = "x" * 2_000_000  # 2MB
         result = redact_pair("SOME_KEY", large_value)
         assert result == large_value  # returned unchanged, not processed
+
+    def test_large_value_under_secret_key_is_still_redacted(self) -> None:
+        """The size cap must not fail open: layer 1 reads the key, not the value.
+
+        Regression: the original MEDIUM-3 fix returned early before layer 1, so
+        AWS_SECRET_ACCESS_KEY=<2MB> passed through in full.
+        """
+        large_value = "x" * 2_000_000  # 2MB
+        assert redact_pair("AWS_SECRET_ACCESS_KEY", large_value) == "[REDACTED]"
+        assert redact_pair("DB_PASSWORD", large_value) == "[REDACTED]"
+
+    def test_large_value_under_secret_key_is_audited(self) -> None:
+        """audit_pair must report the oversized secret rather than reporting clean."""
+        finding = audit_pair("AWS_SECRET_ACCESS_KEY", "x" * 2_000_000)
+        assert finding is not None
+        assert finding.layer == "key_pattern"
+
+    def test_large_value_layer_one_is_cheap(self) -> None:
+        """Layer 1 on an oversized value must not fall through to the regex layers."""
+        import time
+
+        large_value = "x" * 20_000_000  # 20MB
+        start = time.perf_counter()
+        assert redact_pair("SECRET_KEY", large_value) == "[REDACTED]"
+        assert time.perf_counter() - start < 1.0
+
+    def test_oversized_value_under_non_denylisted_key_is_a_known_gap(self) -> None:
+        """Documents the residual size-cap gap rather than leaving it unstated.
+
+        Keys like DATABASE_URL carry a safe suffix ('_url'), so layer 1 never
+        matches them — they rely on layer 4, which scans the value and is
+        therefore skipped when oversized. Such values pass through unredacted.
+        Callers that print values must surface the skip; see _MAX_DETECT_LENGTH.
+        """
+        large_url = "postgres://user:pw@host/db?pad=" + "x" * 2_000_000
+        assert redact_pair("DATABASE_URL", large_url) == large_url
+        assert audit_pair("DATABASE_URL", large_url) is None
+
+        # Same URL under the cap is redacted normally.
+        small_url = "postgres://user:pw@host/db"
+        assert redact_pair("DATABASE_URL", small_url) == "postgres://user:[REDACTED]@host/db"
 
     def test_deeply_nested_dict_does_not_crash(self) -> None:
         """MEDIUM-4: redact_dict should handle deeply nested dicts without RecursionError."""

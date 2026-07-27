@@ -181,8 +181,13 @@ def audit_dict(
 # Prevents stack overflow from crafted nested JSON/Python literals.
 _MAX_DETECT_DEPTH = 3
 
-# Maximum value length for detection. Values beyond this are likely data dumps,
-# not config values. Prevents DoS via large inputs hitting 221+ regex patterns.
+# Maximum value length for the value-scanning layers (2-5). Values beyond this
+# are likely data dumps, not config values. Prevents DoS via large inputs hitting
+# 221+ regex patterns. Layer 1 (key-name match) is deliberately exempt: it reads
+# only the key, so an oversized value under a secret-named key is still redacted.
+# Residual gap: an oversized value under an innocuous key name is not scanned and
+# passes through unredacted. Callers that print values (e.g. a CLI) should surface
+# that skip rather than let it look screened.
 _MAX_DETECT_LENGTH = 1_048_576  # 1 MB
 
 
@@ -196,14 +201,15 @@ def _detect(
     _redact_structured can reuse parsed pairs without re-parsing.
     The public API (audit_pair) strips the tuple before returning.
     """
-    if len(value) > _MAX_DETECT_LENGTH:
-        return None
+    oversized = len(value) > _MAX_DETECT_LENGTH
 
-    # Layer 1: Key-name pattern match
+    # Layer 1: Key-name pattern match. Runs even when oversized — it reads the key,
+    # not the value, so it costs nothing and still catches SECRET_KEY=<huge blob>.
     matched_pattern = matches_key_pattern(key, config.patterns, config.safe_suffixes)
     if matched_pattern is not None:
-        # URL keys get partial redaction, not full
-        if key.lower().endswith("_url") and has_url_credentials(value):
+        # URL keys get partial redaction, not full. Skipped when oversized:
+        # partial redaction has to scan the value, and a 50 MB URL is not a URL.
+        if not oversized and key.lower().endswith("_url") and has_url_credentials(value):
             return Finding(
                 key=key,
                 reason=f"key_pattern:{matched_pattern}",
@@ -215,6 +221,10 @@ def _detect(
             reason=f"key_pattern:{matched_pattern}",
             layer="key_pattern",
         )
+
+    # Layers 2-5 all scan the value itself. Stop here for oversized input.
+    if oversized:
+        return None
 
     # Layer 4: URL credential detection (even without key pattern match)
     if has_url_credentials(value):

@@ -39,11 +39,13 @@ redact_pair("config", crafted_json)
 import json
 from secretscreen import redact_pair
 
+
 def nested_json(depth, key, val):
     d = {key: val}
     for _ in range(depth):
         d = {"x": d}
     return json.dumps(d)
+
 
 payload = nested_json(1000, "cookie", "session_abc123xyz")  # ~7KB
 result = redact_pair("config", payload)
@@ -73,6 +75,7 @@ audit_pair("config", '{"password": "sup3r_s3cr3t"}')
 **Proof of concept**:
 ```python
 from secretscreen import audit_pair
+
 finding = audit_pair("config", '{"password": "sup3r_s3cr3t"}')
 print(finding._parsed_pairs)  # (('password', 'sup3r_s3cr3t'),)
 ```
@@ -100,9 +103,10 @@ matches_key_pattern("cookie_secret_url")
 **Proof of concept**:
 ```python
 from secretscreen._keys import matches_key_pattern
-matches_key_pattern("cookie_secret_url")     # → None (should be "secret")
-matches_key_pattern("credential_url")        # → None
-matches_key_pattern("password_token_url")    # → None
+
+matches_key_pattern("cookie_secret_url")  # → None (should be "secret")
+matches_key_pattern("credential_url")  # → None
+matches_key_pattern("password_token_url")  # → None
 ```
 
 **Impact**: Keys containing both a dangerous substring and a safe suffix bypass Layer 1 entirely. If the value also lacks a recognizable format (Layer 3), the secret passes through.
@@ -121,6 +125,18 @@ matches_key_pattern("password_token_url")    # → None
 
 **Fix**: Add a size cap at the top of `_detect` (before any layer), returning early for values exceeding a reasonable maximum (e.g., 1MB).
 
+**Correction (2026-07-27)**: The fix as prescribed above was wrong and was implemented as
+written. Returning early *before any layer* skips Layer 1, which matches on the key name and
+never touches the value — so `AWS_SECRET_ACCESS_KEY=<2MB blob>` passed through completely
+unredacted and `audit_pair` reported no finding. Trading a 7.7s CPU stall for a silent secret
+leak is the wrong direction for a redaction library.
+
+The cap now gates Layers 2–5 only; Layer 1 always runs. Residual gap, accepted and tested
+(`test_oversized_value_under_non_denylisted_key_is_a_known_gap`): an oversized value under a key
+that Layer 1 does not match — including safe-suffix keys like `DATABASE_URL`, which depend on
+Layer 4's value scan — is not scanned and passes through. Callers that print values must surface
+the skip rather than let unscanned output look screened.
+
 ---
 
 ### [MEDIUM-4] redact_dict/audit_dict crash on deeply nested dicts — `_core.py:296`
@@ -132,6 +148,7 @@ matches_key_pattern("password_token_url")    # → None
 **Proof of concept**:
 ```python
 from secretscreen import redact_dict
+
 data = {}
 current = data
 for _ in range(1000):
