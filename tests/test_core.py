@@ -256,19 +256,21 @@ class TestSecurityFixes:
 
     def test_deeply_nested_json_does_not_bypass_detection(self) -> None:
         """HIGH-1: Deeply nested JSON should not suppress detection via RecursionError."""
-        import json
+        # Built by string concatenation, not json.dumps: the encoder recurses in C
+        # and blows the stack on 3.11 before the library is ever called, which would
+        # make this a test of json.dumps rather than of redact_pair.
+        payload = '{"x": ' * 1000 + '{"password": "deep_secret_value"}' + "}" * 1000
 
-        # Build JSON nested 1000 levels deep with a secret key
-        d: dict = {"password": "deep_secret_value"}
-        for _ in range(1000):
-            d = {"x": d}
-        payload = json.dumps(d)
-
-        # The structured parsing should either detect the secret (if within
-        # flatten depth) or at minimum not crash. The key "config" is innocuous
-        # so detection depends on structured parsing finding "password".
+        # The key "config" is innocuous, so detection depends on structured parsing
+        # reaching "password". Below the flatten depth cap it will not, but it must
+        # degrade to a pass-through rather than raising.
         result = redact_pair("config", payload)
         assert isinstance(result, str)  # didn't crash
+
+        # Same secret at a depth the parser does reach is still detected — otherwise
+        # this test would pass just as well against a no-op implementation.
+        shallow = '{"x": ' * 2 + '{"password": "deep_secret_value"}' + "}" * 2
+        assert "deep_secret_value" not in redact_pair("config", shallow)
 
     def test_finding_does_not_expose_secret_values(self) -> None:
         """MEDIUM-1: Finding objects should not contain plaintext secrets."""
