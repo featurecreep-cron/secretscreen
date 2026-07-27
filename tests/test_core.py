@@ -1,6 +1,7 @@
 """Tests for core orchestration — redact_pair, redact_dict, audit_pair, audit_dict."""
 
 from secretscreen import Finding, Mode, audit_dict, audit_pair, redact_dict, redact_pair
+from secretscreen._core import _MAX_DETECT_LENGTH
 
 
 class TestRedactPair:
@@ -302,6 +303,35 @@ class TestSecurityFixes:
         finding = audit_pair("AWS_SECRET_ACCESS_KEY", "x" * 2_000_000)
         assert finding is not None
         assert finding.layer == "key_pattern"
+
+    def test_worst_case_input_at_the_cap_stays_sub_second(self) -> None:
+        """The cap must be set against adversarial input, not a run of one character.
+
+        At least one vendored gitleaks pattern backtracks: cost is roughly quadratic
+        above ~128KB on random high-entropy text (what a secret-shaped blob looks
+        like). The original 1MB cap allowed a ~107s scan. A run of 'x' is ~500x
+        faster at the same size, which is why it was not a safe benchmark.
+        """
+        import random
+        import time
+
+        random.seed(0)
+        alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/+="
+        at_cap = "".join(random.choices(alphabet, k=_MAX_DETECT_LENGTH))
+
+        start = time.perf_counter()
+        redact_pair("BLOB", at_cap)
+        elapsed = time.perf_counter() - start
+
+        # Measured ~0.57s at 64KB. 5s leaves headroom for slow CI without letting a
+        # future cap increase quietly reintroduce a multi-minute scan.
+        assert elapsed < 5.0, f"scan at the cap took {elapsed:.1f}s — is _MAX_DETECT_LENGTH too high?"
+
+    def test_cap_matches_the_parser_bound(self) -> None:
+        """Layer 2 was already bounded at 64KB; keeping both at one value is simpler."""
+        from secretscreen._parsers import MAX_PARSE_LENGTH
+
+        assert _MAX_DETECT_LENGTH == MAX_PARSE_LENGTH
 
     def test_large_value_layer_one_is_cheap(self) -> None:
         """Layer 1 on an oversized value must not fall through to the regex layers."""
