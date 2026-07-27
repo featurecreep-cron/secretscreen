@@ -267,6 +267,46 @@ class TestNoSideEffects:
         assert not violations, "Filesystem write in library module:\n" + "\n".join(violations)
 
 
+class TestVersionSync:
+    """pyproject version and __version__ must agree.
+
+    Nothing else enforces this, and a drift ships a wheel whose metadata
+    disagrees with the value the library reports at runtime.
+    """
+
+    def test_versions_match(self):
+        import tomllib
+
+        pyproject = Path(__file__).parent.parent / "pyproject.toml"
+        declared = tomllib.loads(pyproject.read_text())["project"]["version"]
+
+        tree = ast.parse((SRC / "__init__.py").read_text())
+        runtime = None
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name) and target.id == "__version__":
+                        if isinstance(node.value, ast.Constant):
+                            runtime = node.value.value
+
+        assert runtime == declared, f"pyproject version {declared!r} != __version__ {runtime!r}"
+
+
+class TestCLIEntryPoint:
+    """The console script must point at something importable and callable."""
+
+    def test_entry_point_resolves(self):
+        import tomllib
+
+        pyproject = Path(__file__).parent.parent / "pyproject.toml"
+        scripts = tomllib.loads(pyproject.read_text())["project"]["scripts"]
+        assert scripts["secretscreen"] == "secretscreen._cli:main"
+
+        from secretscreen._cli import main
+
+        assert callable(main)
+
+
 class TestPublicAPI:
     """__init__.py exports exactly the intended public API.
 

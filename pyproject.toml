@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "secretscreen"
-version = "0.1.0"
+version = "0.2.0"
 description = "Detect and redact secrets in key-value pairs, dicts, and environment variables."
 readme = "README.md"
 license = "MIT"
@@ -23,6 +23,9 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Typing :: Typed",
 ]
+
+[project.scripts]
+secretscreen = "secretscreen._cli:main"
 
 [project.optional-dependencies]
 # Linters gate CI, so they carry upper bounds: an unpinned ruff minor bump
