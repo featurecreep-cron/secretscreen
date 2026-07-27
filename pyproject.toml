@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "secretscreen"
-version = "0.2.0"
+version = "0.2.1"
 description = "Detect and redact secrets in key-value pairs, dicts, and environment variables."
 readme = "README.md"
 license = "MIT"

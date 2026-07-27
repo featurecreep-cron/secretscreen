@@ -173,14 +173,28 @@ def audit_dict(
 # Prevents stack overflow from crafted nested JSON/Python literals.
 _MAX_DETECT_DEPTH = 3
 
-# Maximum value length for the value-scanning layers (2-5). Values beyond this
-# are likely data dumps, not config values. Prevents DoS via large inputs hitting
-# 221+ regex patterns. Layer 1 (key-name match) is deliberately exempt: it reads
-# only the key, so an oversized value under a secret-named key is still redacted.
-# Residual gap: an oversized value under an innocuous key name is not scanned and
-# passes through unredacted. Callers that print values (e.g. a CLI) should surface
-# that skip rather than let it look screened.
-_MAX_DETECT_LENGTH = 1_048_576  # 1 MB
+# Maximum value length for the value-scanning layers (2-5). Prevents DoS via large
+# inputs hitting 221+ regex patterns, at least one of which backtracks badly.
+#
+# The threshold is set from measured worst-case input — random high-entropy text,
+# which is what a secret-shaped blob looks like — not from a run of one character.
+# Cost is roughly quadratic above ~128KB:
+#
+#     64KB   0.57s        256KB   14s
+#     128KB  1.00s        1MB    107s
+#
+# This was originally 1MB, chosen against a benign benchmark (a run of 'x', which
+# is ~500x faster at the same size). That admitted exactly the input that hurts:
+# a value one byte under the cap pinned a core for nearly two minutes. 64KB matches
+# MAX_PARSE_LENGTH in _parsers.py, which already bounded layer 2 — so this only
+# narrows layers 3-5, and only for values big enough to be data dumps, not config.
+#
+# Layer 1 (key-name match) is deliberately exempt: it reads only the key, so an
+# oversized value under a secret-named key is still redacted. Residual gap: an
+# oversized value under an innocuous key name is not scanned and passes through
+# unredacted. Callers that print values (e.g. a CLI) should surface that skip
+# rather than let it look screened.
+_MAX_DETECT_LENGTH = 65_536  # 64 KB
 
 
 def _detect(key: str, value: str, config: ScreenConfig, _depth: int = 0) -> Finding | None:

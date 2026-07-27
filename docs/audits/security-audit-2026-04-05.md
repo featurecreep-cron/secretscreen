@@ -131,6 +131,29 @@ never touches the value — so `AWS_SECRET_ACCESS_KEY=<2MB blob>` passed through
 unredacted and `audit_pair` reported no finding. Trading a 7.7s CPU stall for a silent secret
 leak is the wrong direction for a redaction library.
 
+**Second correction (2026-07-27)**: the 1MB threshold was also wrong, and for the same
+reason the finding understated the problem — both were measured on benign input. The
+"~7.7s at 50MB" figure above reproduces (I measured 11.7s for 50MB of `"x"`), but a run of
+one character is not the worst case. On random high-entropy text — what a secret-shaped
+blob actually looks like — at least one vendored pattern backtracks and cost goes roughly
+quadratic above ~128KB:
+
+| size | `"x" * n` | random |
+|------|-----------|--------|
+| 64KB | — | 0.57s |
+| 128KB | — | 1.00s |
+| 256KB | — | 14s |
+| 1MB | 0.195s | **107s** |
+| 10MB | 1.8s | 20.7 min |
+
+A 1MB cap therefore admitted exactly the input that hurts most: a value one byte under it
+pinned a core for nearly two minutes. Lowered to 64KB (0.57s worst case), matching
+`MAX_PARSE_LENGTH`, which already bounded Layer 2 — so only Layers 3–5 narrow, and only
+for values large enough to be data dumps rather than config. Pinned by
+`test_worst_case_input_at_the_cap_stays_sub_second`.
+
+Not yet identified: *which* rule backtracks. Tracked with the gitleaks sync work in #1.
+
 The cap now gates Layers 2–5 only; Layer 1 always runs. Residual gap, accepted and tested
 (`test_oversized_value_under_non_denylisted_key_is_a_known_gap`): an oversized value under a key
 that Layer 1 does not match — including safe-suffix keys like `DATABASE_URL`, which depend on

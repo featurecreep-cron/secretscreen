@@ -70,7 +70,7 @@ Redaction is structural, not line-based: it parses the format, so it catches `DB
 | 1 | `--audit` found secrets |
 | 2 | Something could not be parsed or read — see stderr |
 
-That third case is the one that matters. This is best-effort defense-in-depth, and a cat-replacement is exactly the tool people stop thinking about, so the CLI never prints unparsed content verbatim: a line it cannot structure is replaced with the redaction token, named on stderr, and turns the exit code non-zero. The same applies to values above the 1 MB detection cap — they are reported as unscanned rather than passed off as clean.
+That third case is the one that matters. This is best-effort defense-in-depth, and a cat-replacement is exactly the tool people stop thinking about, so the CLI never prints unparsed content verbatim: a line it cannot structure is replaced with the redaction token, named on stderr, and turns the exit code non-zero. The same applies to values above the 64 KB detection cap — they are reported as unscanned rather than passed off as clean.
 
 If you are scanning a git repository rather than config-shaped data, use [gitleaks](https://github.com/gitleaks/gitleaks) instead. That is a different job.
 
