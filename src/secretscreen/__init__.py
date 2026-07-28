@@ -2,6 +2,9 @@
 
 Best-effort defense-in-depth. Not a security boundary.
 
+Also ships a CLI for shell use — `secretscreen FILE...` redacts and prints,
+`--audit` reports findings without values. See README.md.
+
 Five detection layers:
 1. Key-name denylist — substring match against known secret key patterns.
 2. Structured value parsing — JSON, Python literals, INI, DSN, URL query params.
