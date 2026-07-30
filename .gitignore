@@ -14,3 +14,8 @@ build/
 *.swo
 .env
 .venv/
+
+# coverage artifacts
+.coverage
+.coverage.*
+htmlcov/
