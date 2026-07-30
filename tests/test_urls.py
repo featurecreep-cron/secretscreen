@@ -199,6 +199,30 @@ class TestUrlRedactionEdgeCases:
     def test_no_scheme_is_not_a_credential(self) -> None:
         assert has_url_credentials("user:password@host/path") is False
 
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://[user:s3cr3t@internal.lan/db",  # unclosed IPv6 bracket
+            "discord://tokenvalue@[::1",  # truncated IPv6 literal
+        ],
+    )
+    def test_unparseable_url_shapes_fail_closed(self, url: str) -> None:
+        """A URL-looking value we cannot parse must be treated as a credential.
+
+        Reporting it clean let the whole value print verbatim, because the
+        redaction half — which does fail closed — was never reached.
+        """
+        assert has_url_credentials(url) is True
+        assert "s3cr3t" not in redact_url_credentials(url)
+        assert "tokenvalue" not in redact_url_credentials(url)
+
+    def test_unparseable_url_is_redacted_end_to_end(self) -> None:
+        from secretscreen import audit_pair, redact_pair
+
+        value = "http://[user:s3cr3t@internal.lan/db"
+        assert audit_pair("NOTIFY", value) is not None
+        assert "s3cr3t" not in redact_pair("NOTIFY", value)
+
 
 class TestNetlocReplacementToken:
     """The replacement token is stripped of URL-structural characters.
@@ -231,3 +255,34 @@ class TestNetlocReplacementToken:
         result = redact_url_credentials("discord://tokenvalue@123", replacement="[]")
         assert "tokenvalue" not in result
         assert "REDACTED" in result
+
+    @pytest.mark.parametrize(
+        ("replacement", "expected"),
+        [("a@b", "discord://ab@123"), ("x/y", "discord://xy@123"), ("@", "discord://REDACTED@123")],
+    )
+    def test_replacement_containing_netloc_delimiters(self, replacement: str, expected: str) -> None:
+        """'@' and '/' would re-split the netloc, not just break the IPv6 check."""
+        assert redact_url_credentials("discord://tokenvalue@123", replacement=replacement) == expected
+
+    @pytest.mark.parametrize("url", ["discord://1234567890/path", "gotify://gotify.lan:8080/message"])
+    def test_credential_bearing_scheme_without_userinfo_is_untouched(self, url: str) -> None:
+        """The scheme rule applies to userinfo, not to the scheme alone."""
+        assert has_url_credentials(url) is False
+        assert redact_url_credentials(url) == url
+
+
+class TestLayerOneUrlInteraction:
+    """Keys that match a secret pattern *and* end in a safe '_url' suffix.
+
+    The suffix vetoes layer 1's name match, so these reach layer 4 and get
+    partial redaction rather than whole-value replacement. Pinned because the
+    two rules interact and neither file makes that obvious on its own.
+    """
+
+    @pytest.mark.parametrize("key", ["NOTIFY_TOKEN_URL", "WEBHOOK_SECRET_URL", "APP_PASSWORD_URL"])
+    def test_userinfo_credential_under_safe_suffix_key(self, key: str) -> None:
+        from secretscreen import redact_pair
+
+        result = redact_pair(key, "discord://tokenvalue@123")
+        assert "tokenvalue" not in result
+        assert "123" in result  # partial, not whole-value replacement

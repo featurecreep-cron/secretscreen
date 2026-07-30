@@ -108,13 +108,20 @@ def _credential_kind(parsed: SplitResult) -> str | None:
 
 
 def has_url_credentials(value: str) -> bool:
-    """Check if a value contains a URL with embedded credentials."""
+    """Check if a value contains a URL with embedded credentials.
+
+    A value that looks like a URL but cannot be parsed counts as
+    credential-bearing. urlsplit rejects malformed IPv6 brackets and invalid
+    ports, and ``http://[user:pw@host`` is both unparseable and a credential —
+    reporting it clean let it print verbatim. Redaction already failed closed
+    on the same input, so the two halves disagreed and the safe half never ran.
+    """
     if "://" not in value:
         return False
     try:
         return _credential_kind(urlsplit(_strip_url_wrapper(value))) is not None
     except (ValueError, AttributeError):
-        return False
+        return True
 
 
 def redact_url_credentials(value: str, replacement: str = _DEFAULT_REPLACEMENT) -> str:
