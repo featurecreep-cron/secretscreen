@@ -59,7 +59,7 @@ class TestRedactMode:
     def test_partial_url_redaction_keeps_structure(self, tmp_path, capsys) -> None:
         main([_write(tmp_path, "sample.env", SAMPLE_ENV)])
         out = capsys.readouterr().out
-        assert "postgres://admin:[REDACTED]@db.internal:5432/prod" in out
+        assert "postgres://admin:REDACTED@db.internal:5432/prod" in out
 
     def test_custom_replacement(self, tmp_path, capsys) -> None:
         main([_write(tmp_path, "s.env", "DB_PASSWORD=hunter2\n"), "--replacement", "XXX"])
@@ -189,7 +189,7 @@ class TestFormats:
     def test_dsn_format(self, tmp_path, capsys) -> None:
         main([_write(tmp_path, "dsn.txt", "postgres://admin:s3cr3t@db:5432/prod\n"), "--format", "dsn"])
         out = capsys.readouterr().out
-        assert out.strip() == "postgres://admin:[REDACTED]@db:5432/prod"
+        assert out.strip() == "postgres://admin:REDACTED@db:5432/prod"
 
     @pytest.mark.parametrize(
         ("name", "content", "marker"),

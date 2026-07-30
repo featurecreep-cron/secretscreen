@@ -356,7 +356,7 @@ class TestSecurityFixes:
 
         # Same URL under the cap is redacted normally.
         small_url = "postgres://user:pw@host/db"
-        assert redact_pair("DATABASE_URL", small_url) == "postgres://user:[REDACTED]@host/db"
+        assert redact_pair("DATABASE_URL", small_url) == "postgres://user:REDACTED@host/db"
 
     def test_deeply_nested_dict_does_not_crash(self) -> None:
         """MEDIUM-4: redact_dict should handle deeply nested dicts without RecursionError."""
@@ -391,18 +391,18 @@ class TestSecurityFixes:
 
     def test_jdbc_url_redacted(self) -> None:
         """LOW-1: JDBC URLs should have passwords redacted."""
-        from secretscreen._urls import redact_url_password
+        from secretscreen._urls import redact_url_credentials
 
-        result = redact_url_password("jdbc:postgresql://admin:S3cr3t@prod-db:5432/main")
+        result = redact_url_credentials("jdbc:postgresql://admin:S3cr3t@prod-db:5432/main")
         assert "S3cr3t" not in result
         assert "admin" in result
         assert result.startswith("jdbc:")
 
     def test_ipv6_url_redaction_valid(self) -> None:
         """LOW-2: IPv6 URL redaction should produce valid URLs."""
-        from secretscreen._urls import redact_url_password
+        from secretscreen._urls import redact_url_credentials
 
-        result = redact_url_password("redis://user:secret@[::1]:6379/0")
+        result = redact_url_credentials("redis://user:secret@[::1]:6379/0")
         assert "secret" not in result
         assert "[" in result  # brackets preserved
         assert "::1" in result
