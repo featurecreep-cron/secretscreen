@@ -8,7 +8,7 @@ from __future__ import annotations
 import enum
 from dataclasses import dataclass
 
-from secretscreen._entropy import looks_like_secret
+from secretscreen._entropy import MIN_ENTROPY_LENGTH, looks_like_secret, shannon_entropy
 from secretscreen._formats import matches_known_format
 from secretscreen._keys import (
     DEFAULT_KEY_PATTERNS,
@@ -16,7 +16,7 @@ from secretscreen._keys import (
     matches_key_pattern,
 )
 from secretscreen._parsers import extract_pairs
-from secretscreen._urls import has_url_credentials, redact_url_credentials
+from secretscreen._urls import credential_position, has_url_credentials, redact_url_credentials
 
 REDACTED = "[REDACTED]"
 
@@ -390,6 +390,177 @@ def _redact_recursive(
         return [_redact_recursive(item, config, _depth + 1) for item in data]
 
     return data
+
+
+# Explanation states. A value is either redacted, deliberately not redacted,
+# not scanned, or nothing matched it — and the middle two are the ones worth
+# reading, because they are where the tool made a decision to stay quiet.
+STATE_REDACTED = "redacted"
+STATE_VETOED = "vetoed"
+STATE_CLEAN = "clean"
+STATE_UNSCANNED = "unscanned"
+
+
+@dataclass(frozen=True, slots=True)
+class Explanation:
+    """Why one key-value pair was or was not redacted. Never holds the value."""
+
+    key: str
+    state: str
+    layer: str
+    reason: str
+
+
+def _vetoed_by_safe_suffix(key: str, config: ScreenConfig) -> tuple[str, str] | None:
+    """Return (pattern, suffix) when a safe suffix suppressed a layer-1 match."""
+    matched = matches_key_pattern(key, config.patterns, safe_suffixes=())
+    if matched is None:
+        return None
+    key_lower = key.lower()
+    for suffix in config.safe_suffixes:
+        if key_lower.endswith(suffix):
+            return matched, suffix
+    return None
+
+
+def _describe_finding(finding: Finding, value: str) -> str:
+    """Render a finding as a reason phrase, without quoting the value."""
+    detail = finding.reason.partition(":")[2]
+    if finding.layer == "key_pattern":
+        return f"matched {detail!r}"
+    if finding.layer == "url_credentials":
+        position = credential_position(value)
+        return f"credential in {position} position" if position else "URL with embedded credentials"
+    if finding.layer == "format_detection":
+        return f"matches known format {detail}"
+    if finding.layer == "entropy":
+        return f"entropy {detail}"
+    if finding.layer == "structured_parsing":
+        return finding.detail or finding.reason
+    return finding.reason
+
+
+def _clean_reason(value: str, config: ScreenConfig) -> str:
+    """Explain why nothing matched, quoting the nearest miss rather than silence.
+
+    The entropy figure is computed even in normal mode, where layer 5 never
+    runs. It is a single pass over the value and it is the one number that says
+    what --aggressive would do differently, so the mode choice can be measured
+    instead of guessed.
+    """
+    chars = "".join(value.split())
+    if len(chars) < MIN_ENTROPY_LENGTH:
+        return f"{len(chars)} chars, below the {MIN_ENTROPY_LENGTH}-char entropy floor"
+
+    entropy = shannon_entropy(value, _stripped=chars)
+    threshold = config.entropy_threshold
+    if config.mode == Mode.NORMAL:
+        verdict = "aggressive WOULD flag" if entropy >= threshold else "aggressive would not flag"
+        return f"entropy {entropy:.2f} ({verdict}; threshold {threshold:.2f})"
+    return f"entropy {entropy:.2f}, below threshold {threshold:.2f}"
+
+
+def explain_pair(
+    key: str,
+    value: str,
+    *,
+    mode: Mode = Mode.NORMAL,
+    extra_keys: tuple[str, ...] = (),
+    safe_suffixes: tuple[str, ...] = DEFAULT_SAFE_SUFFIXES,
+    entropy_threshold: float = 4.5,
+) -> Explanation:
+    """Account for one pair: what happened to it, and why.
+
+    Reports on values that were *not* redacted as well as values that were.
+    An undetected secret is invisible by definition, so the only defence
+    against one is making the non-detections reviewable.
+    """
+    config = ScreenConfig(
+        mode=mode,
+        extra_keys=extra_keys,
+        safe_suffixes=safe_suffixes,
+        entropy_threshold=entropy_threshold,
+    )
+    return _explain(key, value, config)
+
+
+def _explain(key: str, value: str, config: ScreenConfig) -> Explanation:
+    if not isinstance(value, str) or not value:
+        return Explanation(key, STATE_CLEAN, "", "empty value")
+
+    finding = _detect(key, value, config)
+    if finding is not None:
+        return Explanation(key, STATE_REDACTED, finding.layer, _describe_finding(finding, value))
+
+    # Order matters: layer 1 still redacts an oversized value under a secret
+    # key name, so the size skip is only reported once detection has declined.
+    if len(value) > _MAX_DETECT_LENGTH:
+        return Explanation(
+            key,
+            STATE_UNSCANNED,
+            "",
+            f"{len(value)} bytes exceeds the {_MAX_DETECT_LENGTH}-byte scan cap",
+        )
+
+    vetoed = _vetoed_by_safe_suffix(key, config)
+    if vetoed is not None:
+        pattern, suffix = vetoed
+        return Explanation(
+            key,
+            STATE_VETOED,
+            "key_pattern",
+            f"matched {pattern!r}, suppressed by safe suffix {suffix!r}",
+        )
+
+    return Explanation(key, STATE_CLEAN, "", _clean_reason(value, config))
+
+
+def explain_dict(
+    data: dict[str, object] | list[object] | object,
+    *,
+    mode: Mode = Mode.NORMAL,
+    extra_keys: tuple[str, ...] = (),
+    safe_suffixes: tuple[str, ...] = DEFAULT_SAFE_SUFFIXES,
+    entropy_threshold: float = 4.5,
+) -> list[Explanation]:
+    """Account for every string value in a nested structure."""
+    config = ScreenConfig(
+        mode=mode,
+        extra_keys=extra_keys,
+        safe_suffixes=safe_suffixes,
+        entropy_threshold=entropy_threshold,
+    )
+    explanations: list[Explanation] = []
+    _explain_recursive(data, config, explanations)
+    return explanations
+
+
+def _explain_recursive(
+    data: object,
+    config: ScreenConfig,
+    explanations: list[Explanation],
+    _depth: int = 0,
+    _prefix: str = "",
+) -> None:
+    """Walk a structure, accounting for every string value it contains."""
+    if _depth >= _MAX_RECURSIVE_DEPTH:
+        return
+
+    if isinstance(data, dict):
+        for k, v in data.items():
+            key_str = f"{_prefix}.{k}" if _prefix else str(k)
+            if isinstance(v, str):
+                explanations.append(_explain(key_str, v, config))
+            elif isinstance(v, (dict, list)):
+                _explain_recursive(v, config, explanations, _depth + 1, key_str)
+
+    elif isinstance(data, list):
+        for i, item in enumerate(data):
+            key_str = f"{_prefix}[{i}]"
+            if isinstance(item, str):
+                explanations.append(_explain(key_str, item, config))
+            elif isinstance(item, (dict, list)):
+                _explain_recursive(item, config, explanations, _depth + 1, key_str)
 
 
 def _audit_recursive(
