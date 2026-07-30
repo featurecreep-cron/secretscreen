@@ -107,13 +107,17 @@ def _parse_dsn(value: str) -> list[tuple[str, str]]:
 
 
 def _parse_url_query(value: str) -> list[tuple[str, str]]:
-    """Extract pairs from URL query parameters."""
+    """Extract pairs from URL query parameters and embedded credentials.
+
+    Credentials are collected whether or not the URL carries a query string.
+    Returning early on an empty query — as this did previously — made the
+    credential extraction below unreachable for every URL without a ``?``,
+    which is most of them.
+    """
     if "://" not in value and "?" not in value:
         return []
 
     parsed = urlsplit(value)
-    if not parsed.query:
-        return []
 
     pairs: list[tuple[str, str]] = []
     for k, values in parse_qs(parsed.query).items():

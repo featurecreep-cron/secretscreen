@@ -16,7 +16,7 @@ from secretscreen._keys import (
     matches_key_pattern,
 )
 from secretscreen._parsers import extract_pairs
-from secretscreen._urls import has_url_credentials, redact_url_password
+from secretscreen._urls import has_url_credentials, redact_url_credentials
 
 REDACTED = "[REDACTED]"
 
@@ -317,7 +317,7 @@ def _apply_redaction(
     Used by both redact_pair and _redact_recursive.
     """
     if finding.layer == "url_credentials":
-        return redact_url_password(value, config.replacement)
+        return redact_url_credentials(value, config.replacement)
 
     if finding.layer == "structured_parsing":
         return _redact_structured(value, config, cached_pairs)
