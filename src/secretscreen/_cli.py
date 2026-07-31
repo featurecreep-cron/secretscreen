@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from typing import TYPE_CHECKING
 
@@ -41,11 +42,36 @@ EXIT_OK = 0
 EXIT_FINDINGS = 1
 EXIT_ERROR = 2
 
-FORMATS = ("env", "json", "ini", "dsn", "auto")
+FORMATS = ("env", "json", "ini", "yaml", "dsn", "auto")
 
 _JSON_EXTENSIONS = {".json"}
 _INI_EXTENSIONS = {".ini", ".cfg", ".conf", ".properties"}
 _ENV_EXTENSIONS = {".env", ".envrc"}
+_YAML_EXTENSIONS = {".yaml", ".yml"}
+
+# grep prefixes its output with `file:` and `line:` when given -n or several
+# files. Those colons break any colon-separated format: the first ':' belongs
+# to the prefix, so the key becomes a line number and the rest of the line —
+# including any secret — becomes one opaque value that no layer matches.
+#
+# Detection is document-wide rather than per-line. A single line starting with
+# digits and a colon is ambiguous (a timestamp, a port); a whole input shaped
+# that way is grep output. Prefixes are stripped for detection and put back on
+# output, so `file:line:` context survives into the redacted result.
+# grep marks matching lines `file:NN:` and context lines `file-NN-`, mixing both
+# delimiters in one stream whenever -A/-B/-C is used. Matching only the colon
+# form drops the ratio below the threshold on such a stream, which skips
+# stripping and lets the colon format be chosen anyway — the leak this guard
+# exists to prevent. The filename may not contain whitespace, which keeps the
+# pattern off ordinary content like `command: run --port 8080-9090-x`.
+_GREP_PREFIX = re.compile(r"^(?:\S*?([:-])\d+\1|\d+[:-])")
+_GREP_SEPARATOR = "--"
+_GREP_MIN_LINES = 2
+_GREP_PREFIX_RATIO = 0.8
+
+# A YAML list entry carrying a bare value: `- prod`. There is no key, but there
+# is a value, so it is scanned rather than passed through or redacted wholesale.
+_YAML_LIST_ITEM = re.compile(r"^(\s*-\s+)(\S.*)$")
 
 # Column widths for --explain output. The key column is capped so one very long
 # key (a grep prefix, a deep JSON path) cannot push every reason off the screen.
@@ -53,8 +79,13 @@ _EXPLAIN_KEY_MAX_WIDTH = 44
 _EXPLAIN_LAYER_WIDTH = 17
 
 # Separator characters by format, in precedence order.
-_SEPARATORS = {"env": ("=",), "ini": ("=", ":")}
-_COMMENT_PREFIXES = {"env": ("#",), "ini": ("#", ";")}
+# YAML separates a mapping key from its value with a colon *and a space*.
+# Splitting on a bare colon would cut `- discord://token@id` at the scheme,
+# leaving `//token@id` as a value under the key `- discord` — which matches
+# nothing, so the token prints. INI keeps the bare colon: `key:value` is valid
+# there, and its values do not usually carry URLs.
+_SEPARATORS = {"env": ("=",), "ini": ("=", ":"), "yaml": ("=", ": ")}
+_COMMENT_PREFIXES = {"env": ("#",), "ini": ("#", ";"), "yaml": ("#",)}
 
 
 class _Report:
@@ -68,6 +99,7 @@ class _Report:
         self.findings: list[tuple[str, int, Finding]] = []
         self.problems: list[str] = []
         self.explanations: list[tuple[str, int, Explanation]] = []
+        self.notes: list[str] = []
 
     def problem(self, source: str, lineno: int, message: str) -> None:
         self.problems.append(f"{source}:{lineno}: {message}")
@@ -80,6 +112,30 @@ def _strip_quotes(value: str) -> tuple[str, str]:
     return "", value
 
 
+def _split_grep_prefixes(text: str) -> list[tuple[str, str]] | None:
+    """Split grep-style `file:line:` prefixes off each line, or None if absent.
+
+    Returns (prefix, remainder) per line so the prefix can be reprinted while
+    only the remainder is parsed. The decision is made for the whole input:
+    one line that happens to start with digits and a colon is ambiguous, an
+    input where nearly every line does is grep output.
+    """
+    lines = text.splitlines()
+    candidates = [line for line in lines if line.strip() and line.strip() != _GREP_SEPARATOR]
+    if len(candidates) < _GREP_MIN_LINES:
+        return None
+
+    matched = sum(1 for line in candidates if _GREP_PREFIX.match(line))
+    if matched < len(candidates) * _GREP_PREFIX_RATIO:
+        return None
+
+    split: list[tuple[str, str]] = []
+    for line in lines:
+        match = _GREP_PREFIX.match(line)
+        split.append((match.group(0), line[match.end() :]) if match else ("", line))
+    return split
+
+
 def _detect_format(text: str, filename: str | None) -> str:
     """Pick a parser from the file extension, falling back to content sniffing."""
     if filename:
@@ -90,6 +146,8 @@ def _detect_format(text: str, filename: str | None) -> str:
             return "json"
         if extension in _INI_EXTENSIONS:
             return "ini"
+        if extension in _YAML_EXTENSIONS:
+            return "yaml"
         if extension in _ENV_EXTENSIONS or lowered.split("/")[-1].startswith(".env"):
             return "env"
 
@@ -100,6 +158,29 @@ def _detect_format(text: str, filename: str | None) -> str:
         bare = line.strip()
         if bare.startswith("[") and bare.endswith("]"):
             return "ini"
+
+    # Colon-separated content only after any grep prefixes have been removed.
+    # Sniffing before that would read grep's own `line:` as the separator and
+    # hand the whole remainder — secret included — to detection as one value.
+    body = _split_grep_prefixes(text)
+    if body is not None:
+        lines = [rest for _, rest in body]
+    elif any(_GREP_PREFIX.match(line) for line in text.splitlines()):
+        # Some lines look prefixed and not enough to strip with confidence.
+        # Refuse the colon format: env redacts what it cannot parse, which is
+        # useless but loud, and that is the right way to be wrong here.
+        return "env"
+    else:
+        lines = text.splitlines()
+    equals = colons = 0
+    for line in lines:
+        bare = line.strip()
+        if not bare or bare.startswith("#"):
+            continue
+        equals += "=" in bare
+        colons += ":" in bare and "=" not in bare.split(":", 1)[0]
+    if colons > equals:
+        return "yaml"
     return "env"
 
 
@@ -116,33 +197,69 @@ def _process_lines(text: str, fmt: str, source: str, args: argparse.Namespace, r
     comments = _COMMENT_PREFIXES[fmt]
     out: list[str] = []
 
-    for lineno, raw in enumerate(text.splitlines(), 1):
+    rows = _split_grep_prefixes(text)
+    if rows is None:
+        rows = [("", line) for line in text.splitlines()]
+    elif any(prefix for prefix, _ in rows):
+        report.notes.append("detected grep-style line prefixes; stripped before parsing, restored on output")
+
+    for lineno, (prefix, raw) in enumerate(rows, 1):
         stripped = raw.strip()
 
-        if not stripped or stripped.startswith(comments):
-            out.append(raw)
+        # Comments and blanks are judged after the grep prefix is removed.
+        # `compose.yaml:24:# note` does not start with '#', which is why piped
+        # comments used to be redacted while the same file read directly was fine.
+        if not stripped or stripped.startswith(comments) or stripped == _GREP_SEPARATOR:
+            out.append(prefix + raw)
             continue
 
-        if fmt == "ini" and stripped.startswith("[") and stripped.endswith("]"):
-            out.append(raw)
+        if fmt in ("ini", "yaml") and stripped.startswith("[") and stripped.endswith("]"):
+            out.append(prefix + raw)
             continue
 
-        positions = [raw.find(sep) for sep in separators if raw.find(sep) != -1]
-        if not positions:
+        # `services:` opens a block. There is no value slot on the line, so
+        # there is nothing to screen and nothing to vouch for.
+        if fmt == "yaml" and stripped.endswith(":"):
+            out.append(prefix + raw)
+            continue
+
+        found = [(raw.find(sep), sep) for sep in separators if raw.find(sep) != -1]
+        if not found:
+            # A YAML list entry has a value but no key, so it is scanned as one
+            # rather than redacted for lacking a separator it was never going
+            # to have.
+            item = _YAML_LIST_ITEM.match(raw) if fmt == "yaml" else None
+            if item is not None:
+                marker, content = item.group(1), item.group(2)
+                redacted, unscanned = _redact_value("", content, args.mode, args.replacement)
+                if args.explain:
+                    report.explanations.append((source, lineno, explain_pair("", content, mode=args.mode)))
+                if args.audit:
+                    finding = audit_pair("", content, mode=args.mode)
+                    if finding is not None:
+                        report.findings.append((source, lineno, finding))
+                    continue
+                if unscanned:
+                    report.problem(source, lineno, f"value exceeds the {_MAX_DETECT_LENGTH}-byte scan cap; not scanned")
+                out.append(f"{prefix}{marker}{redacted}")
+                continue
+
             # Structurally unparseable. Redact rather than echo it — an unparsed
             # line is exactly the one we cannot vouch for.
             report.problem(source, lineno, "no key=value separator; line redacted unscanned")
             out.append(args.replacement)
             continue
 
-        split_at = min(positions)
-        separator = raw[split_at]  # preserve ':' vs '=' rather than normalising
+        # preserve the separator as written rather than normalising it
+        split_at, separator = min(found)
         # `left` is echoed verbatim so that spacing and any `export ` prefix survive
         # the round trip; only the detection key is normalised.
-        left, value = raw[:split_at], raw[split_at + 1 :]
+        left, value = raw[:split_at], raw[split_at + len(separator) :]
         key = left.strip()
         if fmt == "env" and key.startswith("export "):
             key = key[len("export ") :].strip()
+        if fmt == "yaml" and key.startswith("- "):
+            key = key[2:].strip()
 
         quote, inner = _strip_quotes(value.strip())
         leading = value[: len(value) - len(value.lstrip())]
@@ -161,7 +278,7 @@ def _process_lines(text: str, fmt: str, source: str, args: argparse.Namespace, r
         redacted, unscanned = _redact_value(key, inner, args.mode, args.replacement)
         if unscanned:
             report.problem(source, lineno, f"value exceeds the {_MAX_DETECT_LENGTH}-byte scan cap; not scanned")
-        out.append(f"{left}{separator}{leading}{quote}{redacted}{quote}")
+        out.append(f"{prefix}{left}{separator}{leading}{quote}{redacted}{quote}")
 
     return out
 
@@ -301,6 +418,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:
         for line in lines:
             print(line)
+
+    for note in dict.fromkeys(report.notes):
+        print(f"secretscreen: {note}", file=sys.stderr)
 
     _print_explanations(report)
 
