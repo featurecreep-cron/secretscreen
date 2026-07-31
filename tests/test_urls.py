@@ -224,6 +224,40 @@ class TestUrlRedactionEdgeCases:
         assert "s3cr3t" not in redact_pair("NOTIFY", value)
 
 
+class TestCredentialPosition:
+    """Names where the credential sits, for --explain. Never returns the value."""
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            ("postgres://admin:pw@db.lan/app", "password"),
+            ("discord://tokenvalue@1234567890", "userinfo"),
+            ("https://user@github.com/repo", None),
+            ("https://example.com", None),
+            ("not a url", None),
+            ("/var/lib/data", None),
+            ("http://[user:pw@host", "unparseable"),
+        ],
+    )
+    def test_position(self, value: str, expected: str | None) -> None:
+        from secretscreen._urls import credential_position
+
+        assert credential_position(value) == expected
+
+    def test_agrees_with_has_url_credentials(self) -> None:
+        """A position must be reported exactly when a credential is detected."""
+        from secretscreen._urls import credential_position
+
+        for value in [
+            "postgres://admin:pw@db.lan/app",
+            "discord://tokenvalue@123",
+            "https://user@github.com/repo",
+            "https://example.com",
+            "http://[user:pw@host",
+        ]:
+            assert (credential_position(value) is not None) is has_url_credentials(value)
+
+
 class TestNetlocReplacementToken:
     """The replacement token is stripped of URL-structural characters.
 

@@ -26,6 +26,8 @@ from secretscreen._core import (
     Mode,
     audit_dict,
     audit_pair,
+    explain_dict,
+    explain_pair,
     redact_dict,
     redact_pair,
 )
@@ -33,7 +35,7 @@ from secretscreen._core import (
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from secretscreen._core import Finding
+    from secretscreen._core import Explanation, Finding
 
 EXIT_OK = 0
 EXIT_FINDINGS = 1
@@ -44,6 +46,11 @@ FORMATS = ("env", "json", "ini", "dsn", "auto")
 _JSON_EXTENSIONS = {".json"}
 _INI_EXTENSIONS = {".ini", ".cfg", ".conf", ".properties"}
 _ENV_EXTENSIONS = {".env", ".envrc"}
+
+# Column widths for --explain output. The key column is capped so one very long
+# key (a grep prefix, a deep JSON path) cannot push every reason off the screen.
+_EXPLAIN_KEY_MAX_WIDTH = 44
+_EXPLAIN_LAYER_WIDTH = 17
 
 # Separator characters by format, in precedence order.
 _SEPARATORS = {"env": ("=",), "ini": ("=", ":")}
@@ -60,6 +67,7 @@ class _Report:
     def __init__(self) -> None:
         self.findings: list[tuple[str, int, Finding]] = []
         self.problems: list[str] = []
+        self.explanations: list[tuple[str, int, Explanation]] = []
 
     def problem(self, source: str, lineno: int, message: str) -> None:
         self.problems.append(f"{source}:{lineno}: {message}")
@@ -139,6 +147,9 @@ def _process_lines(text: str, fmt: str, source: str, args: argparse.Namespace, r
         quote, inner = _strip_quotes(value.strip())
         leading = value[: len(value) - len(value.lstrip())]
 
+        if args.explain:
+            report.explanations.append((source, lineno, explain_pair(key, inner, mode=args.mode)))
+
         if args.audit:
             finding = audit_pair(key, inner, mode=args.mode)
             if finding is not None:
@@ -163,6 +174,10 @@ def _process_json(text: str, source: str, args: argparse.Namespace, report: _Rep
         report.problem(source, exc.lineno, f"invalid JSON ({exc.msg}); nothing printed")
         return []
 
+    if args.explain:
+        for explanation in explain_dict(data, mode=args.mode):
+            report.explanations.append((source, 0, explanation))
+
     if args.audit:
         for finding in audit_dict(data, mode=args.mode):
             report.findings.append((source, 0, finding))
@@ -179,6 +194,8 @@ def _process_dsn(text: str, source: str, args: argparse.Namespace, report: _Repo
         if not raw.strip():
             out.append(raw)
             continue
+        if args.explain:
+            report.explanations.append((source, lineno, explain_pair("dsn", raw.strip(), mode=args.mode)))
         if args.audit:
             finding = audit_pair("dsn", raw.strip(), mode=args.mode)
             if finding is not None:
@@ -203,6 +220,35 @@ def _read(path: str, report: _Report) -> str | None:
         return None
 
 
+def _print_explanations(report: _Report) -> None:
+    """Write the accounting to stderr so stdout stays a usable redacted stream.
+
+    Location is shown only when more than one input contributed, so the common
+    single-file case stays readable.
+    """
+    if not report.explanations:
+        return
+
+    print("secretscreen: explain — key names and reasons only, no values", file=sys.stderr)
+
+    sources = {source for source, _, _ in report.explanations}
+    show_location = len(sources) > 1
+    labels = [
+        f"{source}:{lineno}" if show_location and lineno else source if show_location else ""
+        for source, lineno, _ in report.explanations
+    ]
+
+    state_width = max(len(e.state) for _, _, e in report.explanations)
+    key_width = min(max(len(e.key) for _, _, e in report.explanations), _EXPLAIN_KEY_MAX_WIDTH)
+    label_width = max((len(label) for label in labels), default=0)
+
+    for label, (_, _, explanation) in zip(labels, report.explanations, strict=True):
+        prefix = f"{label:<{label_width}}  " if show_location else ""
+        layer = explanation.layer or "-"
+        columns = f"{explanation.state:<{state_width}}  {explanation.key:<{key_width}}  {layer:<{_EXPLAIN_LAYER_WIDTH}}"
+        print(f"  {prefix}{columns}  {explanation.reason}", file=sys.stderr)
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="secretscreen",
@@ -214,6 +260,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--audit", action="store_true", help="report findings without values; exit 1 if any are found")
     parser.add_argument("--format", choices=FORMATS, default="auto", help="input format (default: auto-detect)")
     parser.add_argument("--aggressive", action="store_true", help="add entropy detection; more false positives")
+    parser.add_argument(
+        "--explain",
+        action="store_true",
+        help="report on stderr what happened to every value and why, including the ones left alone",
+    )
     parser.add_argument("--replacement", default=REDACTED, help=f"replacement text (default: {REDACTED})")
     return parser
 
@@ -250,6 +301,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:
         for line in lines:
             print(line)
+
+    _print_explanations(report)
 
     for problem in report.problems:
         print(f"secretscreen: {problem}", file=sys.stderr)

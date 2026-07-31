@@ -124,6 +124,20 @@ def has_url_credentials(value: str) -> bool:
         return True
 
 
+def credential_position(value: str) -> str | None:
+    """Name where the credential sits, for diagnostics. None if there is none.
+
+    Returns "userinfo" or "password". An unparseable URL-shaped value reports
+    "unparseable", matching has_url_credentials, which treats it as a credential.
+    """
+    if "://" not in value:
+        return None
+    try:
+        return _credential_kind(urlsplit(_strip_url_wrapper(value)))
+    except (ValueError, AttributeError):
+        return "unparseable"
+
+
 def redact_url_credentials(value: str, replacement: str = _DEFAULT_REPLACEMENT) -> str:
     """Replace only the credential portion of a URL.
 

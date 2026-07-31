@@ -68,10 +68,33 @@ secretscreen [FILE...]              reads stdin when FILE is omitted or '-'
   --audit                           report findings without values; exit 1 if any
   --format env|json|ini|dsn|auto    default: auto-detect from extension, then content
   --aggressive                      add entropy detection; more false positives
+  --explain                         account on stderr for every value, including the untouched ones
   --replacement TEXT                default: [REDACTED]
 ```
 
-Redaction is structural, not line-based: it parses the format, so it catches `DB_PASSWORD=hunter2` on the key name and rewrites `postgres://admin:s3cr3t@host/db` to `postgres://admin:[REDACTED]@host/db` without destroying the rest of the line. Comments, blank lines, quoting, `export` prefixes, INI sections and `:` separators all survive the round trip.
+Redaction is structural, not line-based: it parses the format, so it catches `DB_PASSWORD=hunter2` on the key name and rewrites `postgres://admin:s3cr3t@host/db` to `postgres://admin:REDACTED@host/db` without destroying the rest of the line. Comments, blank lines, quoting, `export` prefixes, INI sections and `:` separators all survive the round trip.
+
+Inside a URL the replacement drops its brackets, because `[` in that position makes the result unparseable — screening already-screened output would otherwise destroy it.
+
+### Knowing what was left alone
+
+A missed secret is invisible: the output looks screened and nothing says otherwise. `--explain` writes an account of every value to **stderr**, so stdout stays a usable redacted stream and `secretscreen app.env --explain > clean.env` still works.
+
+```
+$ secretscreen watchtower.env --explain > screened.env
+secretscreen: explain — key names and reasons only, no values
+  redacted   WATCHTOWER_NOTIFICATION_URL  url_credentials  credential in userinfo position
+  vetoed     GF_OAUTH_TOKEN_URL           key_pattern      matched 'token', suppressed by safe suffix '_url'
+  clean      IMAGE_DIGEST                 -                entropy 4.14 (aggressive would not flag; threshold 4.50)
+  clean      DEPLOY_PUBLIC_KEY            -                entropy 4.67 (aggressive WOULD flag; threshold 4.50)
+  unscanned  BACKUP_BLOB                  -                2202009 bytes exceeds the 65536-byte scan cap
+```
+
+Four states. `redacted` and `clean` are self-explanatory; the two in between are the ones worth reading. **`vetoed`** means a rule fired and something suppressed it — that is where the tool decided to stay quiet. **`unscanned`** means the size cap skipped the value-scanning layers.
+
+Clean lines carry the nearest miss rather than silence. The entropy figure is computed even in normal mode, where that layer never runs, so you can see what `--aggressive` would change before turning it on.
+
+Like `--audit`, this never prints a value — paste it into a bug report as-is.
 
 **What the exit code means:**
 
