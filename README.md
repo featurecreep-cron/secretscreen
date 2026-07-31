@@ -66,7 +66,7 @@ secretscreen --audit config.json            # findings only, no values, exit 1 i
 ```
 secretscreen [FILE...]              reads stdin when FILE is omitted or '-'
   --audit                           report findings without values; exit 1 if any
-  --format env|json|ini|dsn|auto    default: auto-detect from extension, then content
+  --format env|json|ini|yaml|dsn|auto  default: auto-detect from extension, then content
   --aggressive                      add entropy detection; more false positives
   --explain                         account on stderr for every value, including the untouched ones
   --replacement TEXT                default: [REDACTED]
@@ -75,6 +75,37 @@ secretscreen [FILE...]              reads stdin when FILE is omitted or '-'
 Redaction is structural, not line-based: it parses the format, so it catches `DB_PASSWORD=hunter2` on the key name and rewrites `postgres://admin:s3cr3t@host/db` to `postgres://admin:REDACTED@host/db` without destroying the rest of the line. Comments, blank lines, quoting, `export` prefixes, INI sections and `:` separators all survive the round trip.
 
 Inside a URL the replacement drops its brackets, because `[` in that position makes the result unparseable — screening already-screened output would otherwise destroy it.
+
+### Compose files and grep output
+
+```
+$ secretscreen compose.yaml
+# Watchtower stack
+services:
+  watchtower:
+    image: containrrr/watchtower
+    environment:
+      WATCHTOWER_NOTIFICATION_URL: discord://REDACTED@1234567890
+      WATCHTOWER_CLEANUP: "true"
+    # keep an eye on this one
+    restart: unless-stopped
+```
+
+Indentation, comments, and block openers (`services:`) survive; only values are touched. List entries are screened whether they carry a key (`- DB_PASSWORD=hunter2`) or not (`- discord://token@id`).
+
+This is **line-oriented, not a real YAML parse** — a parser would mean a third-party dependency, and this package is stdlib-only on purpose. Block scalars (`|`, `>`) are the visible consequence: their bodies are not `key: value`, so they are redacted and reported rather than quietly passed through.
+
+grep's `file:NN:` and `file-NN-` markers are recognised and stripped before parsing, then put back on output, so `grep -rn SECRET ~/stacks | secretscreen` keeps its file-and-line context:
+
+```
+$ grep -n 'NOTIFICATION' compose.yaml | secretscreen
+secretscreen: detected grep-style line prefixes; stripped before parsing, restored on output
+6:      WATCHTOWER_NOTIFICATION_URL: discord://REDACTED@1234567890
+```
+
+That stripping is what makes colon-separated detection safe to attempt at all. Without it the first colon on the line belongs to grep's line number, the key becomes `6`, and the whole remainder — secret included — becomes one value that matches nothing. So when the input is only partly prefixed and the shape is ambiguous, the sniffer refuses the colon format and falls back to `env`, which redacts what it cannot parse. Useless output beats quiet output.
+
+One case stays deliberately blunt: a single stream mixing formats, such as `grep -rn` across both `.env` and `.yaml` files, picks the majority format and redacts the rest wholesale. Loud and safe rather than half-parsed.
 
 ### Knowing what was left alone
 
