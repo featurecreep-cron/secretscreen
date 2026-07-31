@@ -3,8 +3,11 @@ name: CodeQL
 on:
   push:
     branches: [main]
+  # No `branches:` filter. Gating on the base branch means a stacked pull
+  # request — one opened against another feature branch — runs nothing, and
+  # reports only the skipped automerge job, which reads like a pass. Push is
+  # still limited to main so feature-branch pushes do not double-run.
   pull_request:
-    branches: [main]
   schedule:
     - cron: "0 6 * * 3"
 
