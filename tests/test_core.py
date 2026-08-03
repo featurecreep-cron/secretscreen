@@ -185,6 +185,11 @@ class TestSecretsInsideLists:
         findings = audit_dict({"tokens": ["hunter2"]})
         assert [f.key for f in findings] == ["tokens"]
 
+    def test_audit_still_descends_through_a_list_into_dicts(self) -> None:
+        """The string branch must not swallow the container branch beside it."""
+        findings = audit_dict({"services": [{"db": {"password": "hunter2"}}]})
+        assert [f.key for f in findings] == ["password"]
+
     def test_redact_audit_and_explain_agree(self) -> None:
         """The regression that matters.
 
