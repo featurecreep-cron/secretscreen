@@ -6,7 +6,7 @@ Public API: redact_pair, redact_dict, audit_pair, audit_dict.
 from __future__ import annotations
 
 import enum
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from secretscreen._entropy import MIN_ENTROPY_LENGTH, looks_like_secret, shannon_entropy
 from secretscreen._formats import matches_known_format
@@ -429,12 +429,20 @@ STATE_UNSCANNED = "unscanned"
 
 @dataclass(frozen=True, slots=True)
 class Explanation:
-    """Why one key-value pair was or was not redacted. Never holds the value."""
+    """Why one key-value pair was or was not redacted. Never holds the value.
+
+    ``key`` is for reading — inside a structure it is a path such as
+    ``services[0].db.password``. ``name`` is the plain key that path ends at,
+    which is what a caller matches rules against. Keeping both apart matters:
+    matching a rule against the path is how an account of what happened ends
+    up disagreeing with what was printed.
+    """
 
     key: str
     state: str
     layer: str
     reason: str
+    name: str = ""
 
 
 def _vetoed_by_safe_suffix(key: str, config: ScreenConfig) -> tuple[str, str] | None:
@@ -567,8 +575,14 @@ def _explain_recursive(
     explanations: list[Explanation],
     _depth: int = 0,
     _prefix: str = "",
+    _name: str = "",
 ) -> None:
-    """Walk a structure, accounting for every string value it contains."""
+    """Walk a structure, accounting for every string value it contains.
+
+    Two keys are carried down, not one: the display path, and the plain key
+    it ends at. A list element inherits the name of the key its list belongs
+    to, the same key redaction screened it under.
+    """
     if _depth >= _MAX_RECURSIVE_DEPTH:
         # "Accounts for every value" has to include the ones the cap stopped
         # it reaching. Returning quietly is the failure --explain exists for.
@@ -579,17 +593,17 @@ def _explain_recursive(
         for k, v in data.items():
             key_str = f"{_prefix}.{k}" if _prefix else str(k)
             if isinstance(v, str):
-                explanations.append(_explain(key_str, v, config))
+                explanations.append(replace(_explain(key_str, v, config), name=str(k)))
             elif isinstance(v, (dict, list)):
-                _explain_recursive(v, config, explanations, _depth + 1, key_str)
+                _explain_recursive(v, config, explanations, _depth + 1, key_str, str(k))
 
     elif isinstance(data, list):
         for i, item in enumerate(data):
             key_str = f"{_prefix}[{i}]"
             if isinstance(item, str):
-                explanations.append(_explain(key_str, item, config))
+                explanations.append(replace(_explain(key_str, item, config), name=_name))
             elif isinstance(item, (dict, list)):
-                _explain_recursive(item, config, explanations, _depth + 1, key_str)
+                _explain_recursive(item, config, explanations, _depth + 1, key_str, _name)
 
 
 def _audit_recursive(

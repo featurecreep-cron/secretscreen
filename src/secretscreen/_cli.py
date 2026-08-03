@@ -27,6 +27,7 @@ from secretscreen import __version__, _config
 from secretscreen._config import Config, ConfigError
 from secretscreen._core import (
     _MAX_DETECT_LENGTH,
+    _MAX_RECURSIVE_DEPTH,
     REDACTED,
     STATE_REDACTED,
     STATE_VETOED,
@@ -83,11 +84,9 @@ _YAML_LIST_ITEM = re.compile(r"^(\s*-\s+)(\S.*)$")
 # key (a grep prefix, a deep JSON path) cannot push every reason off the screen.
 _EXPLAIN_KEY_MAX_WIDTH = 44
 
-# Mirrors the library default; used when neither a flag nor a config sets one.
-_DEFAULT_ENTROPY_THRESHOLD = 4.5
-
-# Matches _core._MAX_RECURSIVE_DEPTH so the rule overlay stops where redaction did.
-_JSON_RULE_MAX_DEPTH = 100
+# Imported rather than repeated: the rule overlay has to stop exactly where
+# redaction did, and a comment saying two literals agree is not a mechanism.
+_JSON_RULE_MAX_DEPTH = _MAX_RECURSIVE_DEPTH
 _EXPLAIN_LAYER_WIDTH = 17
 
 # Separator characters by format, in precedence order.
@@ -214,31 +213,30 @@ def _resolve_settings(path: str | None, args: argparse.Namespace, report: _Repor
     nearest, then flags — so the closest file wins and an explicit flag beats
     every file.
     """
-    layers: list[Config] = []
+    merged = Config()
 
     if args.config:
-        layers.append(_config.load(Path(args.config)))
+        merged = _config.merge(merged, _config.load(Path(args.config)))
     elif not args.no_config:
         user = _config.user_config_path()
         if user.is_file():
-            layers.append(_config.load(user))
+            merged = _config.merge(merged, _config.load(user))
 
         start = Path(path).absolute().parent if path else Path.cwd()
-        for found in _config.discover(start):
+        for found in _config.discover(start, honour_root=args.trust_config):
             discovered = _config.load(found)
-            if not args.trust_config:
-                # A discovered file may tighten redaction but not loosen it:
-                # it may have arrived with a repository rather than being
-                # written by whoever is running the command.
-                before = discovered.show
-                discovered = _config.without_show(discovered)
-                if before:
-                    report.notes.append(f"{found}: show entries ignored (pass --trust-config to honour them)")
-            layers.append(discovered)
+            if args.trust_config:
+                merged = _config.merge(merged, discovered)
+                continue
+            # A discovered file may tighten redaction but not loosen it: it
+            # may have arrived with a repository rather than being written by
+            # whoever is running the command.
+            if _config.drops_show(discovered):
+                report.notes.append(f"{found}: show entries ignored (pass --trust-config to honour them)")
+            if discovered.root:
+                report.notes.append(f"{found}: root ignored (pass --trust-config to honour it)")
+            merged = _config.merge_tightening(merged, discovered)
 
-    merged = Config()
-    for layer in layers:
-        merged = _config.merge(merged, layer)
     if path:
         merged = merged.for_file(Path(path).name)
 
@@ -255,7 +253,9 @@ def _resolve_settings(path: str | None, args: argparse.Namespace, report: _Repor
 
     threshold = args.entropy_threshold
     if threshold is None:
-        threshold = merged.entropy_threshold if merged.entropy_threshold is not None else _DEFAULT_ENTROPY_THRESHOLD
+        threshold = (
+            merged.entropy_threshold if merged.entropy_threshold is not None else _config.DEFAULT_ENTROPY_THRESHOLD
+        )
 
     return _Settings(mode=mode, entropy_threshold=threshold, config=merged)
 
@@ -275,6 +275,57 @@ def _rule_explanation(key: str, kind: str, name: str) -> Explanation:
     if kind == "hide":
         return Explanation(key, STATE_REDACTED, "rule", f"hide rule {name!r}")
     return Explanation(key, STATE_VETOED, "rule", f"show rule {name!r} — not examined")
+
+
+def _ancestors(path: str) -> list[str]:
+    """Plain key names of every container a display path passes through.
+
+    `services[0].db.region` came from `services`, then `db`. Index suffixes
+    are dropped: the list belongs to the key, and a rule names the key.
+    """
+    segments = path.split(".")[:-1]
+    return [segment.split("[", 1)[0] for segment in segments if segment]
+
+
+def _rule_covering(explanation: Explanation, config: Config) -> tuple[str, str] | None:
+    """The rule that decided this value, including one applied further up.
+
+    A hide rule replaces everything under the key it names, so an account of
+    what happened to a value inside that subtree has to name the rule rather
+    than the layer that would have run. show does not inherit downward — it
+    vouches for one named key, not for whatever the key contains.
+    """
+    direct = _rule_for(explanation.name or explanation.key, config)
+    if direct is not None:
+        return direct
+    for ancestor in _ancestors(explanation.key):
+        hidden = config.hides(ancestor)
+        if hidden is not None:
+            return ("hide", hidden)
+    return None
+
+
+def _shown_non_strings(data: object, config: Config, _depth: int = 0) -> list[str]:
+    """Keys a show rule names whose value is not a string.
+
+    Reported rather than obeyed. Restoring an object or an array would vouch
+    for every value inside it, including ones added later — the same argument
+    that keeps wildcards out of show. Silence is the one option not available:
+    a rule that neither fires nor complains reads as a rule in force.
+    """
+    if _depth >= _JSON_RULE_MAX_DEPTH:
+        return []
+    found: list[str] = []
+    if isinstance(data, dict):
+        for key, value in data.items():
+            if not isinstance(value, str) and config.shows(str(key)) is not None:
+                found.append(str(key))
+            if isinstance(value, (dict, list)):
+                found.extend(_shown_non_strings(value, config, _depth + 1))
+    elif isinstance(data, list):
+        for item in data:
+            found.extend(_shown_non_strings(item, config, _depth + 1))
+    return found
 
 
 def _rule_for(key: str, config: Config) -> tuple[str, str] | None:
@@ -428,15 +479,24 @@ def _process_json(text: str, source: str, args: argparse.Namespace, settings: _S
         report.problem(source, exc.lineno, f"invalid JSON ({exc.msg}); nothing printed")
         return []
 
-    rules = settings.config.show or settings.config.hide
+    rules = settings.config.has_rules
+
+    if rules:
+        for key in _shown_non_strings(data, settings.config):
+            report.notes.append(f"show rule {key!r} names a value that is not a string; ignored")
 
     if args.explain:
         for explanation in explain_dict(data, mode=settings.mode, entropy_threshold=settings.entropy_threshold):
-            rule = _rule_for(explanation.key, settings.config) if rules else None
+            # Rules match the plain key, never the display path: `hide =
+            # ["region"]` has to fire on services[0].db.region, and an account
+            # that says `clean` while stdout says [REDACTED] is worse than no
+            # account at all.
+            rule = _rule_covering(explanation, settings.config) if rules else None
             resolved = _rule_explanation(explanation.key, *rule) if rule else explanation
             report.explanations.append((source, 0, resolved))
 
     if args.audit:
+        reported: set[str] = set()
         for finding in audit_dict(data, mode=settings.mode, entropy_threshold=settings.entropy_threshold):
             # Match on the rule kind, not on the entry spelling: matching is
             # case-insensitive everywhere else, and an --audit that reported a
@@ -444,9 +504,16 @@ def _process_json(text: str, source: str, args: argparse.Namespace, settings: _S
             rule = _rule_for(finding.key, settings.config) if rules else None
             if rule is not None and rule[0] == "show":
                 continue
+            reported.add(finding.key.lower())
             report.findings.append((source, 0, finding))
         if rules:
+            # Only keys no layer already reported. A hide rule on a key
+            # detection also catches is one finding, not two — anything
+            # counting or diffing --audit output would see the duplicate.
             for key in _hidden_keys(data, settings.config):
+                if key.lower() in reported:
+                    continue
+                reported.add(key.lower())
                 report.findings.append((source, 0, _rule_finding(key, settings.config.hides(key) or "")))
         return []
 
@@ -467,6 +534,14 @@ def _apply_rules_to_structure(
     value, a show rule restores the original, and everything else keeps what
     detection decided. Working from redact_dict's output rather than
     reimplementing it keeps partial URL redaction and the depth caps intact.
+
+    A hide rule covers whatever the key holds — an object, an array, a port
+    number — and replaces the whole of it. Redacting only the leaves inside
+    would leave the shape of a hidden subtree on display, and its key names
+    are usually the half worth hiding. A show rule is the asymmetric case: it
+    is honoured for a string and refused for anything else, because vouching
+    for one named key is a decision about one value, and vouching for a
+    subtree is a decision about values nobody has added yet.
     """
     if _depth >= _JSON_RULE_MAX_DEPTH:
         return redacted
@@ -477,8 +552,10 @@ def _apply_rules_to_structure(
             key_str = str(key)
             current = redacted.get(key)
             rule = _rule_for(key_str, config)
-            if rule is not None and isinstance(value, str):
-                result[key] = replacement if rule[0] == "hide" else value
+            if rule is not None and rule[0] == "hide":
+                result[key] = replacement
+            elif rule is not None and isinstance(value, str):
+                result[key] = value
             elif isinstance(value, (dict, list)):
                 result[key] = _apply_rules_to_structure(value, current, config, replacement, _depth + 1)
             else:
@@ -495,13 +572,17 @@ def _apply_rules_to_structure(
 
 
 def _hidden_keys(data: object, config: Config, _depth: int = 0) -> list[str]:
-    """Keys a hide rule covers, so --audit reports them as findings."""
+    """Keys a hide rule covers, so --audit reports them as findings.
+
+    Whatever the key holds, matching redaction: a hidden object is one
+    finding for the object, not a walk of everything inside it.
+    """
     if _depth >= _JSON_RULE_MAX_DEPTH:
         return []
     found: list[str] = []
     if isinstance(data, dict):
         for key, value in data.items():
-            if isinstance(value, str) and config.hides(str(key)) is not None:
+            if config.hides(str(key)) is not None:
                 found.append(str(key))
             elif isinstance(value, (dict, list)):
                 found.extend(_hidden_keys(value, config, _depth + 1))
@@ -654,8 +735,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help="always redact keys matching this glob. Repeatable.",
     )
     parser.add_argument("--entropy-threshold", type=float, metavar="N", help="entropy cutoff (default: 4.5)")
-    parser.add_argument("--config", metavar="FILE", help="use this config file and skip discovery")
-    parser.add_argument("--no-config", action="store_true", help="ignore all config files")
+    # Mutually exclusive rather than one silently winning: --no-config says
+    # "ignore all config files", and honouring one anyway is the difference
+    # between a flag that did nothing and a flag that did the opposite.
+    sources = parser.add_mutually_exclusive_group()
+    sources.add_argument(
+        "--config",
+        metavar="FILE",
+        help="use only this config file: skips discovery and the user config, and is trusted",
+    )
+    sources.add_argument("--no-config", action="store_true", help="ignore all config files")
     parser.add_argument(
         "--trust-config",
         action="store_true",

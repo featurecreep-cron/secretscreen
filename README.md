@@ -133,11 +133,27 @@ Order: user config, then `.secretscreen.toml` files discovered upward from **eac
 
 **`hide` takes globs. `show` does not.** `show = ["*_KEY"]` would print `AWS_SECRET_ACCESS_KEY`, and it would go on matching keys nobody has written yet. Every show entry is a credential you are choosing to print, so every entry gets named in full. `hide` always wins over `show`, at every scope.
 
-**A discovered project config may tighten redaction but not relax it.** Its `show` entries are ignored unless you pass `--trust-config`, because a `.secretscreen.toml` can arrive with a repository you cloned five minutes ago, and which of your credentials get printed is not that author's decision. Only your own `~/.config` file can loosen anything.
+The same asymmetry decides what a rule can cover in JSON. `hide` names a key and takes whatever that key holds — a string, a port number, a whole object — and replaces all of it, because the shape and key names of a hidden subtree are usually the half worth hiding. `show` is honoured for a string and refused for anything else, with a note on stderr: vouching for one named key is a decision about one value, and vouching for an object is a decision about values nobody has added yet. In a `--format dsn` stream the whole line is the value, and rules match the key `dsn`.
+
+**A discovered project config may tighten redaction but not relax it.** A `.secretscreen.toml` can arrive with a repository you cloned five minutes ago, or be dropped in a shared directory by anyone who can write there, so every setting one carries is read as a request to tighten:
+
+| setting | from a discovered config |
+|---|---|
+| `hide` | applied |
+| `show` | ignored |
+| `[detection] mode` | only `normal` → `aggressive` |
+| `[detection] entropy_threshold` | only downward |
+| `root` | ignored |
+
+`--trust-config` honours all five. Each ignored setting is named on stderr, so a rule that did not fire says so rather than looking like one that did.
+
+The three settings below `show` matter as much as `show` does. `show` prints a credential and is the obvious one; `entropy_threshold = 99` and `mode = "normal"` stop a credential being *found*, and `root = true` needs no rules of its own — it ends the upward walk before your own config one directory up is ever read. All four end with a secret on stdout and `--audit` exiting 0.
+
+Only your own `~/.config` file, or a file you name yourself with `--config`, can loosen anything.
 
 Every loaded config is named on stderr, and a malformed one — bad TOML, an unknown setting, a wildcard where none is allowed — is fatal rather than skipped. A typo that silently disabled a `hide` rule would leave you believing you had configured something you had not.
 
-Equivalent flags exist for one-off use: `--show KEY`, `--hide GLOB`, `--entropy-threshold N`, `--config FILE`, `--no-config`.
+Equivalent flags exist for one-off use: `--show KEY`, `--hide GLOB`, `--entropy-threshold N`, `--no-config`, and `--config FILE` — which uses that file *only*, skipping both discovery and your own `~/.config`, and trusts it because you named it.
 
 ### Knowing what was left alone
 

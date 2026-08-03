@@ -28,6 +28,14 @@ from pathlib import Path
 CONFIG_BASENAME = ".secretscreen.toml"
 USER_CONFIG_BASENAME = "secretscreen.toml"
 
+# Mirrors the library default. Needed here to bound what a discovered config
+# may do to the threshold when there is no other value to compare against.
+DEFAULT_ENTROPY_THRESHOLD = 4.5
+
+# A config file is a short list of key names. Anything larger is not one, and
+# reading it is how a planted file becomes a denial of service.
+MAX_CONFIG_BYTES = 256 * 1024
+
 _WILDCARD_CHARACTERS = "*?["
 
 _TOP_LEVEL_KEYS = frozenset({"show", "hide", "root", "detection", "files"})
@@ -57,13 +65,24 @@ class Config:
     sources: tuple[str, ...] = field(default=())
 
     def for_file(self, basename: str) -> Config:
-        """Apply any ``[files."<basename>"]`` section for this input."""
+        """Apply any ``[files."<basename>"]`` section for this input.
+
+        Section names glob. A name is a scoping selector, not a rule: matching
+        more files cannot grant a section anything a top-level entry does not
+        already have, and matching literally meant ``[files."*.env"]`` loaded
+        without complaint and never fired once.
+        """
         lowered = basename.lower()
         result = self
         for name, section in self.files:
-            if name.lower() == lowered:
+            if fnmatch.fnmatch(lowered, name.lower()):
                 result = merge(result, section)
         return result
+
+    @property
+    def has_rules(self) -> bool:
+        """Whether any show or hide entry is in force."""
+        return bool(self.show or self.hide)
 
     def shows(self, key: str) -> str | None:
         """Return the matching show entry, or None. Exact, case-insensitive."""
@@ -119,18 +138,54 @@ def check_show_entries(entries: tuple[str, ...], label: str) -> None:
         )
 
 
-def without_show(config: Config) -> Config:
-    """Drop every show entry, including inside file sections.
+def merge_tightening(base: Config, overlay: Config) -> Config:
+    """Merge a config that was found on disk rather than written by the caller.
 
-    Applied to configs that were merely found on disk rather than written by
-    the person running the command. A discovered file may make the tool more
-    paranoid; letting it make the tool quieter would mean a repository could
-    decide which of your credentials get printed.
+    A discovered file may make the tool more paranoid and nothing else. It can
+    arrive with a repository cloned five minutes ago, or be planted in a shared
+    directory by anyone with write access there, so every setting it carries is
+    read as a request to tighten:
+
+    - ``hide`` merges normally. Over-redaction is visible and harmless.
+    - ``show`` is dropped. It is the one setting that prints a credential.
+    - ``mode`` may only go up, normal to aggressive, never back down.
+    - ``entropy_threshold`` may only fall. A lower cutoff catches more.
+    - ``root`` is ignored; truncating the walk drops other files' hide rules,
+      which is loosening by omission.
+
+    Stripping only ``show`` was the original mistake: the three settings that
+    quietly stop a secret being *found* are as good as the one that prints it.
     """
-    if not config.show and not any(section.show for _, section in config.files):
-        return config
-    stripped_files = tuple((name, replace(section, show=())) for name, section in config.files)
-    return replace(config, show=(), files=stripped_files)
+    show_free = (
+        replace(overlay, show=(), files=tuple((name, replace(s, show=())) for name, s in overlay.files))
+        if overlay.show or any(s.show for _, s in overlay.files)
+        else overlay
+    )
+    tightened = replace(
+        show_free,
+        mode="aggressive" if "aggressive" in (base.mode, overlay.mode) else base.mode,
+        entropy_threshold=_lower_threshold(base.entropy_threshold, overlay.entropy_threshold),
+        root=base.root,
+    )
+    return merge(base, tightened)
+
+
+def _lower_threshold(base: float | None, overlay: float | None) -> float | None:
+    """The stricter of two entropy cutoffs, bounded by the default.
+
+    Bounded because a discovered file is otherwise free to raise the cutoff
+    out of reach when nothing else set one — 99.0 turns layer 5 off without
+    ever naming a key.
+    """
+    if overlay is None:
+        return base
+    ceiling = base if base is not None else DEFAULT_ENTROPY_THRESHOLD
+    return min(ceiling, overlay)
+
+
+def drops_show(config: Config) -> bool:
+    """Whether this config carries show entries anywhere, including sections."""
+    return bool(config.show) or any(section.show for _, section in config.files)
 
 
 def _union(first: tuple[str, ...], second: tuple[str, ...]) -> tuple[str, ...]:
@@ -141,6 +196,8 @@ def _union(first: tuple[str, ...], second: tuple[str, ...]) -> tuple[str, ...]:
 def load(path: Path) -> Config:
     """Read and validate one config file. Raises ConfigError on any problem."""
     try:
+        if path.is_file() and path.stat().st_size > MAX_CONFIG_BYTES:
+            raise ConfigError(f"{path}: larger than {MAX_CONFIG_BYTES} bytes; not a config file")
         raw = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
         raise ConfigError(f"{path}: cannot read: {exc}") from exc
@@ -149,6 +206,11 @@ def load(path: Path) -> Config:
         data = tomllib.loads(raw)
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"{path}: invalid TOML: {exc}") from exc
+    except RecursionError as exc:
+        # tomllib recurses per nesting level, so a file of nothing but open
+        # brackets exits through the interpreter rather than through our own
+        # error handling — and exit 1 reads as "--audit found something".
+        raise ConfigError(f"{path}: nested too deeply to parse") from exc
 
     return _from_mapping(data, str(path))
 
@@ -233,12 +295,17 @@ def user_config_path() -> Path:
     return root / USER_CONFIG_BASENAME
 
 
-def discover(start: Path, *, stop_at: Path | None = None) -> list[Path]:
+def discover(start: Path, *, stop_at: Path | None = None, honour_root: bool = True) -> list[Path]:
     """Find project configs from `start` upward, nearest last.
 
     Nearest last so the caller can fold them in order and let the closest file
     win. The walk stops at the home directory, at a filesystem root, or at the
     first config declaring ``root = true``.
+
+    ``honour_root`` is False when the files being walked are not trusted. A
+    ``root = true`` in a directory anyone can write to needs no rules of its
+    own to strand the reader's: it ends the walk before their own config one
+    level up is ever read, and the output looks the same either way.
     """
     boundary = stop_at if stop_at is not None else Path.home()
     found: list[Path] = []
@@ -250,7 +317,7 @@ def discover(start: Path, *, stop_at: Path | None = None) -> list[Path]:
         candidate = current / CONFIG_BASENAME
         if candidate.is_file():
             found.append(candidate)
-            if _declares_root(candidate):
+            if honour_root and _declares_root(candidate):
                 break
         if current == boundary or current == current.parent:
             break
@@ -268,5 +335,5 @@ def _declares_root(path: Path) -> bool:
     """
     try:
         return bool(tomllib.loads(path.read_text(encoding="utf-8")).get("root", False))
-    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError, RecursionError):
         return False
