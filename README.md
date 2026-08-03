@@ -107,6 +107,38 @@ That stripping is what makes colon-separated detection safe to attempt at all. W
 
 One case stays deliberately blunt: a single stream mixing formats, such as `grep -rn` across both `.env` and `.yaml` files, picks the majority format and redacts the rest wholesale. Loud and safe rather than half-parsed.
 
+### Config
+
+Once you have found a false positive, `--explain` tells you which key it was. A config file stops you diagnosing it again next run.
+
+```toml
+# ~/.config/secretscreen.toml   or   .secretscreen.toml beside a stack
+
+# Never redact these. Exact key names — no wildcards.
+show = ["DEPLOY_PUBLIC_KEY"]
+
+# Always redact these. Globs are fine.
+hide = ["*_NOTIFICATION_URL", "*_WEBHOOK_URL"]
+
+[detection]
+mode = "normal"            # normal | aggressive
+entropy_threshold = 4.5
+
+# Applies only while this filename is being processed.
+[files."demo.env"]
+show = ["API_TOKEN"]
+```
+
+Order: user config, then `.secretscreen.toml` files discovered upward from **each input file**, nearest last, then flags. Lists union rather than replace, so a closer file extends the broader one instead of silently discarding it. Discovery runs per input, so `secretscreen a/compose.yaml b/compose.yaml` can pick up a different config beside each. Add `root = true` to stop the upward walk.
+
+**`hide` takes globs. `show` does not.** `show = ["*_KEY"]` would print `AWS_SECRET_ACCESS_KEY`, and it would go on matching keys nobody has written yet. Every show entry is a credential you are choosing to print, so every entry gets named in full. `hide` always wins over `show`, at every scope.
+
+**A discovered project config may tighten redaction but not relax it.** Its `show` entries are ignored unless you pass `--trust-config`, because a `.secretscreen.toml` can arrive with a repository you cloned five minutes ago, and which of your credentials get printed is not that author's decision. Only your own `~/.config` file can loosen anything.
+
+Every loaded config is named on stderr, and a malformed one — bad TOML, an unknown setting, a wildcard where none is allowed — is fatal rather than skipped. A typo that silently disabled a `hide` rule would leave you believing you had configured something you had not.
+
+Equivalent flags exist for one-off use: `--show KEY`, `--hide GLOB`, `--entropy-threshold N`, `--config FILE`, `--no-config`.
+
 ### Knowing what was left alone
 
 A missed secret is invisible: the output looks screened and nothing says otherwise. `--explain` writes an account of every value to **stderr**, so stdout stays a usable redacted stream and `secretscreen app.env --explain > clean.env` still works.
