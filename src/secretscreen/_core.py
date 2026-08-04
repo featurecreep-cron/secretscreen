@@ -586,7 +586,7 @@ def _explain_recursive(
     if _depth >= _MAX_RECURSIVE_DEPTH:
         # "Accounts for every value" has to include the ones the cap stopped
         # it reaching. Returning quietly is the failure --explain exists for.
-        explanations.append(Explanation(_prefix, STATE_UNSCANNED, "", _TOO_DEEP))
+        explanations.append(Explanation(_prefix, STATE_UNSCANNED, "", _TOO_DEEP, name=_name))
         return
 
     if isinstance(data, dict):
