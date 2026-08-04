@@ -1,7 +1,13 @@
 """Tests for core orchestration — redact_pair, redact_dict, audit_pair, audit_dict."""
 
 from secretscreen import Finding, Mode, audit_dict, audit_pair, redact_dict, redact_pair
-from secretscreen._core import _MAX_DETECT_LENGTH, STATE_REDACTED, explain_dict
+from secretscreen._core import (
+    _MAX_DETECT_LENGTH,
+    _MAX_RECURSIVE_DEPTH,
+    STATE_REDACTED,
+    STATE_UNSCANNED,
+    explain_dict,
+)
 
 
 class TestRedactPair:
@@ -305,6 +311,47 @@ class TestRecursionDepthGuard:
         value = '{"password": "nested_secret", "host": "localhost"}'
         result = redact_pair("CONFIG", value)
         assert "nested_secret" not in result
+
+
+class TestStructureDepthCapFailsClosed:
+    """The guard against crafted input must not become the way input gets through.
+
+    The cap exists so a hostile document cannot exhaust the stack. Handing
+    back the part below it unexamined turned that guard into the one place a
+    secret was printed without any layer having looked at it — and `--audit`
+    exited 0 on the same document.
+    """
+
+    @staticmethod
+    def _nest(levels: int, leaf: object) -> object:
+        for _ in range(levels):
+            leaf = {"level": leaf}
+        return leaf
+
+    def test_subtree_below_the_cap_is_replaced_not_returned(self) -> None:
+        document = self._nest(_MAX_RECURSIVE_DEPTH, {"DB_PASSWORD": "hunter2"})
+        assert "hunter2" not in repr(redact_dict(document))
+
+    def test_audit_does_not_exit_clean_on_a_document_it_never_entered(self) -> None:
+        document = self._nest(_MAX_RECURSIVE_DEPTH, {"DB_PASSWORD": "hunter2"})
+        findings = audit_dict(document)
+
+        assert len(findings) == 1
+        assert findings[0].layer == "unscanned"
+
+    def test_explain_accounts_for_what_the_cap_stopped_it_reaching(self) -> None:
+        document = self._nest(_MAX_RECURSIVE_DEPTH, {"DB_PASSWORD": "hunter2"})
+        states = [e.state for e in explain_dict(document)]
+
+        assert states == [STATE_UNSCANNED]
+
+    def test_one_level_above_the_cap_is_screened_normally(self) -> None:
+        """The boundary is a boundary, not a cliff the whole document falls off."""
+        document = self._nest(_MAX_RECURSIVE_DEPTH - 1, {"DB_PASSWORD": "hunter2"})
+        findings = audit_dict(document)
+
+        assert "hunter2" not in repr(redact_dict(document))
+        assert [f.key for f in findings] == ["DB_PASSWORD"]
 
 
 class TestSecurityFixes:

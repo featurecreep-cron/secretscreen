@@ -358,7 +358,13 @@ def _redact_structured(
     return redacted
 
 
+# Depth at which the structure walkers stop descending. A guard against crafted
+# input, so what it returns at the limit is a security decision rather than a
+# housekeeping one: everything below the cap is replaced wholesale, because the
+# alternative is handing back a subtree nothing has looked at.
 _MAX_RECURSIVE_DEPTH = 100
+
+_TOO_DEEP = f"nested deeper than {_MAX_RECURSIVE_DEPTH} levels; not scanned"
 
 
 def _redact_recursive(
@@ -373,9 +379,13 @@ def _redact_recursive(
     ``{"tokens": ["ghp_..."]}`` is the same claim about the same secret as
     ``{"token": "ghp_..."}``, and losing the key on the way into the list
     would take layer 1 out of the decision entirely.
+
+    At the depth cap the whole remaining subtree becomes the replacement. It
+    used to be returned as it arrived, which made the one guard against
+    crafted input the one place a secret was printed unexamined.
     """
     if _depth >= _MAX_RECURSIVE_DEPTH:
-        return data
+        return config.replacement
 
     if isinstance(data, dict):
         out: dict[object, object] = {}
@@ -560,6 +570,9 @@ def _explain_recursive(
 ) -> None:
     """Walk a structure, accounting for every string value it contains."""
     if _depth >= _MAX_RECURSIVE_DEPTH:
+        # "Accounts for every value" has to include the ones the cap stopped
+        # it reaching. Returning quietly is the failure --explain exists for.
+        explanations.append(Explanation(_prefix, STATE_UNSCANNED, "", _TOO_DEEP))
         return
 
     if isinstance(data, dict):
@@ -595,6 +608,9 @@ def _audit_recursive(
     every element of ``tokens``.
     """
     if _depth >= _MAX_RECURSIVE_DEPTH:
+        # Redaction replaces this subtree wholesale, so --audit has to say
+        # something rather than exit 0 on a document it never looked into.
+        findings.append(Finding(key=_key, reason=_TOO_DEEP, layer="unscanned", detail=_TOO_DEEP))
         return
 
     if isinstance(data, dict):
