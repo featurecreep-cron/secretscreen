@@ -1,7 +1,13 @@
 """Tests for core orchestration — redact_pair, redact_dict, audit_pair, audit_dict."""
 
 from secretscreen import Finding, Mode, audit_dict, audit_pair, redact_dict, redact_pair
-from secretscreen._core import _MAX_DETECT_LENGTH
+from secretscreen._core import (
+    _MAX_DETECT_LENGTH,
+    _MAX_RECURSIVE_DEPTH,
+    STATE_REDACTED,
+    STATE_UNSCANNED,
+    explain_dict,
+)
 
 
 class TestRedactPair:
@@ -143,11 +149,66 @@ class TestRedactDict:
         assert result["timeout"] is None  # type: ignore[index]
 
     def test_mixed_list(self) -> None:
-        """Lists containing both dicts and non-dicts."""
+        """Lists containing both dicts and non-dicts.
+
+        `"plain"` stays because nothing matches it, not because bare strings
+        in a list are skipped — see the tests below, which use a value that
+        does match.
+        """
         result = redact_dict({"items": [{"token": "abc"}, "plain", 42]})
         assert result["items"][0]["token"] == "[REDACTED]"  # type: ignore[index]
         assert result["items"][1] == "plain"  # type: ignore[index]
         assert result["items"][2] == 42  # type: ignore[index]
+
+
+class TestSecretsInsideLists:
+    """A string in a list is screened under the key the list belongs to.
+
+    An array of tokens is the same claim about the same secret as one token
+    under a singular key, and a config file is where you find both.
+    """
+
+    PAT = "ghp_16C7e42F292c6912E7710c838347Ae178B4a"
+
+    def test_key_name_reaches_list_elements(self) -> None:
+        """Layer 1 matches on the key, so the key has to survive the list."""
+        result = redact_dict({"tokens": ["hunter2"]})
+        assert result["tokens"] == ["[REDACTED]"]  # type: ignore[index]
+
+    def test_value_format_still_fires_without_a_useful_key(self) -> None:
+        result = redact_dict({"blobs": [self.PAT]})
+        assert result["blobs"] == ["[REDACTED]"]  # type: ignore[index]
+
+    def test_bare_top_level_list(self) -> None:
+        assert redact_dict([self.PAT]) == ["[REDACTED]"]
+
+    def test_list_inside_a_list(self) -> None:
+        result = redact_dict({"tokens": [["hunter2"]]})
+        assert result["tokens"] == [["[REDACTED]"]]  # type: ignore[index]
+
+    def test_audit_reports_the_element_under_the_plain_key(self) -> None:
+        """Not an indexed path: callers match show/hide rules on this key."""
+        findings = audit_dict({"tokens": ["hunter2"]})
+        assert [f.key for f in findings] == ["tokens"]
+
+    def test_audit_still_descends_through_a_list_into_dicts(self) -> None:
+        """The string branch must not swallow the container branch beside it."""
+        findings = audit_dict({"services": [{"db": {"password": "hunter2"}}]})
+        assert [f.key for f in findings] == ["password"]
+
+    def test_redact_audit_and_explain_agree(self) -> None:
+        """The regression that matters.
+
+        Before this fix the three disagreed on one input: redaction printed
+        the token, --audit reported nothing, and --explain claimed it had
+        been redacted. A tool that contradicts itself is worse than one that
+        misses, because --explain is what a user reads to check the miss.
+        """
+        document = {"tokens": [self.PAT]}
+
+        assert redact_dict(document)["tokens"] == ["[REDACTED]"]  # type: ignore[index]
+        assert len(audit_dict(document)) == 1
+        assert [e.state for e in explain_dict(document)] == [STATE_REDACTED]
 
 
 class TestAuditPair:
@@ -250,6 +311,47 @@ class TestRecursionDepthGuard:
         value = '{"password": "nested_secret", "host": "localhost"}'
         result = redact_pair("CONFIG", value)
         assert "nested_secret" not in result
+
+
+class TestStructureDepthCapFailsClosed:
+    """The guard against crafted input must not become the way input gets through.
+
+    The cap exists so a hostile document cannot exhaust the stack. Handing
+    back the part below it unexamined turned that guard into the one place a
+    secret was printed without any layer having looked at it — and `--audit`
+    exited 0 on the same document.
+    """
+
+    @staticmethod
+    def _nest(levels: int, leaf: object) -> object:
+        for _ in range(levels):
+            leaf = {"level": leaf}
+        return leaf
+
+    def test_subtree_below_the_cap_is_replaced_not_returned(self) -> None:
+        document = self._nest(_MAX_RECURSIVE_DEPTH, {"DB_PASSWORD": "hunter2"})
+        assert "hunter2" not in repr(redact_dict(document))
+
+    def test_audit_does_not_exit_clean_on_a_document_it_never_entered(self) -> None:
+        document = self._nest(_MAX_RECURSIVE_DEPTH, {"DB_PASSWORD": "hunter2"})
+        findings = audit_dict(document)
+
+        assert len(findings) == 1
+        assert findings[0].layer == "unscanned"
+
+    def test_explain_accounts_for_what_the_cap_stopped_it_reaching(self) -> None:
+        document = self._nest(_MAX_RECURSIVE_DEPTH, {"DB_PASSWORD": "hunter2"})
+        states = [e.state for e in explain_dict(document)]
+
+        assert states == [STATE_UNSCANNED]
+
+    def test_one_level_above_the_cap_is_screened_normally(self) -> None:
+        """The boundary is a boundary, not a cliff the whole document falls off."""
+        document = self._nest(_MAX_RECURSIVE_DEPTH - 1, {"DB_PASSWORD": "hunter2"})
+        findings = audit_dict(document)
+
+        assert "hunter2" not in repr(redact_dict(document))
+        assert [f.key for f in findings] == ["DB_PASSWORD"]
 
 
 class TestSecurityFixes:

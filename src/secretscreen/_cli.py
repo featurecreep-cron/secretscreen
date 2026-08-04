@@ -362,7 +362,13 @@ def _print_explanations(report: _Report) -> None:
     for label, (_, _, explanation) in zip(labels, report.explanations, strict=True):
         prefix = f"{label:<{label_width}}  " if show_location else ""
         layer = explanation.layer or "-"
-        columns = f"{explanation.state:<{state_width}}  {explanation.key:<{key_width}}  {layer:<{_EXPLAIN_LAYER_WIDTH}}"
+        # The width caps the column; it never truncated the key that overran
+        # it, so one deep path still pushed every reason off the screen. The
+        # tail is the informative half of a path — keep that end.
+        key = explanation.key
+        if len(key) > key_width:
+            key = "…" + key[-(key_width - 1) :]
+        columns = f"{explanation.state:<{state_width}}  {key:<{key_width}}  {layer:<{_EXPLAIN_LAYER_WIDTH}}"
         print(f"  {prefix}{columns}  {explanation.reason}", file=sys.stderr)
 
 

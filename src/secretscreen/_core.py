@@ -358,38 +358,64 @@ def _redact_structured(
     return redacted
 
 
+# Depth at which the structure walkers stop descending. A guard against crafted
+# input, so what it returns at the limit is a security decision rather than a
+# housekeeping one: everything below the cap is replaced wholesale, because the
+# alternative is handing back a subtree nothing has looked at.
 _MAX_RECURSIVE_DEPTH = 100
+
+_TOO_DEEP = f"nested deeper than {_MAX_RECURSIVE_DEPTH} levels; not scanned"
 
 
 def _redact_recursive(
     data: object,
     config: ScreenConfig,
     _depth: int = 0,
+    _key: str = "",
 ) -> object:
-    """Recursively walk and redact a nested structure."""
+    """Recursively walk and redact a nested structure.
+
+    A string inside a list is screened under the key the list belongs to:
+    ``{"tokens": ["ghp_..."]}`` is the same claim about the same secret as
+    ``{"token": "ghp_..."}``, and losing the key on the way into the list
+    would take layer 1 out of the decision entirely.
+
+    At the depth cap the whole remaining subtree becomes the replacement. It
+    used to be returned as it arrived, which made the one guard against
+    crafted input the one place a secret was printed unexamined.
+    """
     if _depth >= _MAX_RECURSIVE_DEPTH:
-        return data
+        return config.replacement
 
     if isinstance(data, dict):
         out: dict[object, object] = {}
         for k, v in data.items():
             key_str = str(k)
             if isinstance(v, str):
-                finding, cached_pairs = _detect_with_pairs(key_str, v, config)
-                if finding is not None:
-                    out[k] = _apply_redaction(finding, key_str, v, config, cached_pairs)
-                else:
-                    out[k] = v
+                out[k] = _redact_string(key_str, v, config)
             elif isinstance(v, (dict, list)):
-                out[k] = _redact_recursive(v, config, _depth + 1)
+                out[k] = _redact_recursive(v, config, _depth + 1, key_str)
             else:
                 out[k] = v
         return out
 
     if isinstance(data, list):
-        return [_redact_recursive(item, config, _depth + 1) for item in data]
+        return [
+            _redact_string(_key, item, config)
+            if isinstance(item, str)
+            else _redact_recursive(item, config, _depth + 1, _key)
+            for item in data
+        ]
 
     return data
+
+
+def _redact_string(key: str, value: str, config: ScreenConfig) -> str:
+    """Redact one string, or return it unchanged when nothing matched."""
+    finding, cached_pairs = _detect_with_pairs(key, value, config)
+    if finding is None:
+        return value
+    return _apply_redaction(finding, key, value, config, cached_pairs)
 
 
 # Explanation states. A value is either redacted, deliberately not redacted,
@@ -544,6 +570,9 @@ def _explain_recursive(
 ) -> None:
     """Walk a structure, accounting for every string value it contains."""
     if _depth >= _MAX_RECURSIVE_DEPTH:
+        # "Accounts for every value" has to include the ones the cap stopped
+        # it reaching. Returning quietly is the failure --explain exists for.
+        explanations.append(Explanation(_prefix, STATE_UNSCANNED, "", _TOO_DEEP))
         return
 
     if isinstance(data, dict):
@@ -568,9 +597,20 @@ def _audit_recursive(
     config: ScreenConfig,
     findings: list[Finding],
     _depth: int = 0,
+    _key: str = "",
 ) -> None:
-    """Recursively walk and audit a nested structure."""
+    """Recursively walk and audit a nested structure.
+
+    Strings inside a list are audited under the key the list belongs to, so
+    that what --audit reports and what redaction does cannot disagree. The
+    finding keeps the plain key rather than an indexed path: callers match
+    show/hide rules against it, and a rule naming ``tokens`` has to cover
+    every element of ``tokens``.
+    """
     if _depth >= _MAX_RECURSIVE_DEPTH:
+        # Redaction replaces this subtree wholesale, so --audit has to say
+        # something rather than exit 0 on a document it never looked into.
+        findings.append(Finding(key=_key, reason=_TOO_DEEP, layer="unscanned", detail=_TOO_DEEP))
         return
 
     if isinstance(data, dict):
@@ -581,8 +621,13 @@ def _audit_recursive(
                 if finding is not None:
                     findings.append(finding)
             elif isinstance(v, (dict, list)):
-                _audit_recursive(v, config, findings, _depth + 1)
+                _audit_recursive(v, config, findings, _depth + 1, key_str)
 
     elif isinstance(data, list):
         for item in data:
-            _audit_recursive(item, config, findings, _depth + 1)
+            if isinstance(item, str):
+                finding = _detect(_key, item, config)
+                if finding is not None:
+                    findings.append(finding)
+            else:
+                _audit_recursive(item, config, findings, _depth + 1, _key)

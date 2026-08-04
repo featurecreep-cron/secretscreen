@@ -80,6 +80,21 @@ class TestRedactMode:
         assert "xQ7fJ2mNp9VzR4tLw8YbK3sHdG6aE5cU" not in capsys.readouterr().out
 
 
+class TestExplainLayout:
+    """The account has to stay readable to be worth writing."""
+
+    def test_a_long_key_is_truncated_rather_than_pushing_the_reason_off_screen(self, tmp_path, capsys) -> None:
+        document: object = {"DB_PASSWORD": "hunter2"}
+        for _ in range(40):
+            document = {"level": document}
+        main([_write(tmp_path, "deep.json", json.dumps(document)), "--explain"])
+        lines = [line for line in capsys.readouterr().err.splitlines() if "level" in line]
+
+        assert lines, "expected an explanation naming the nested path"
+        assert all(len(line) < 200 for line in lines), lines
+        assert "…" in lines[0]
+
+
 class TestUnparseableInputFailsLoudly:
     """The core safety property: nothing unparsed reaches stdout verbatim."""
 
