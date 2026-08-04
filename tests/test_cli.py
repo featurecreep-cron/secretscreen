@@ -11,6 +11,7 @@ import json
 
 import pytest
 
+from secretscreen import __version__
 from secretscreen._cli import EXIT_ERROR, EXIT_FINDINGS, EXIT_OK, main
 
 SAMPLE_ENV = """\
@@ -93,6 +94,17 @@ class TestExplainLayout:
         assert lines, "expected an explanation naming the nested path"
         assert all(len(line) < 200 for line in lines), lines
         assert "…" in lines[0]
+
+
+class TestVersion:
+    """--version is how a user reports a bug against the right release."""
+
+    def test_prints_package_version_and_exits_clean(self, capsys) -> None:
+        with pytest.raises(SystemExit) as exit_info:
+            main(["--version"])
+
+        assert exit_info.value.code == EXIT_OK
+        assert capsys.readouterr().out.strip() == f"secretscreen {__version__}"
 
 
 class TestUnparseableInputFailsLoudly:
