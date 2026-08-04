@@ -12,6 +12,8 @@ with a `show` rule would quietly pass tests that should fail.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from secretscreen._cli import EXIT_ERROR, EXIT_FINDINGS, EXIT_OK, main
@@ -588,6 +590,33 @@ class TestRulesInEveryMode:
         (isolated / "xdg" / "secretscreen.toml").write_text('hide = ["dsn"]')
         main([_write(isolated, "d.txt", "postgres://u:p@h/db\n"), "--format", "dsn"])
         assert capsys.readouterr().out.strip() == "[REDACTED]"
+
+
+class TestEachConfigIsReadOnce:
+    """Discovery repeats per input; the reads behind it must not.
+
+    The root check and the load parsed the same file separately, and the walk
+    started again for every input. Fifty files in a twelve-deep tree came to
+    twelve hundred reads of twelve files.
+    """
+
+    def test_one_read_per_file_across_many_inputs(self, isolated, monkeypatch, capsys) -> None:
+        (isolated / ".secretscreen.toml").write_text('hide = ["LOG_*"]')
+        inputs = [_write(isolated, f"a{i}.env", "LOG_LEVEL=debug\n") for i in range(5)]
+
+        reads = []
+        original = Path.read_text
+
+        def counted(self, *args, **kwargs):
+            if self.name == ".secretscreen.toml":
+                reads.append(str(self))
+            return original(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", counted)
+        main(inputs)
+
+        assert capsys.readouterr().out.count("[REDACTED]") == 5
+        assert len(reads) == 1, reads
 
 
 class TestConfigErrorsAreFatal:

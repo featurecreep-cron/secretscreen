@@ -204,7 +204,7 @@ def _detect_format(text: str, filename: str | None) -> str:
     return "env"
 
 
-def _resolve_settings(path: str | None, args: argparse.Namespace, report: _Report) -> _Settings:
+def _resolve_settings(path: str | None, args: argparse.Namespace, report: _Report, loader: _config.Loader) -> _Settings:
     """Fold config files and command-line flags into settings for one input.
 
     Discovery runs per input, not once per process: `secretscreen a/compose.yaml
@@ -216,15 +216,15 @@ def _resolve_settings(path: str | None, args: argparse.Namespace, report: _Repor
     merged = Config()
 
     if args.config:
-        merged = _config.merge(merged, _config.load(Path(args.config)))
+        merged = _config.merge(merged, loader.load(Path(args.config)))
     elif not args.no_config:
         user = _config.user_config_path()
         if user.is_file():
-            merged = _config.merge(merged, _config.load(user))
+            merged = _config.merge(merged, loader.load(user))
 
         start = Path(path).absolute().parent if path else Path.cwd()
-        for found in _config.discover(start, honour_root=args.trust_config):
-            discovered = _config.load(found)
+        for found in loader.discover(start, honour_root=args.trust_config):
+            discovered = loader.load(found)
             if args.trust_config:
                 merged = _config.merge(merged, discovered)
                 continue
@@ -762,6 +762,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     args.mode = Mode.AGGRESSIVE if args.aggressive else None
 
     report = _Report()
+    # One loader for the run: discovery repeats per input, and the files it
+    # finds do not change underneath a single invocation.
+    loader = _config.Loader()
     sources = args.files or ["-"]
     lines: list[str] = []
 
@@ -771,7 +774,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             continue
 
         try:
-            settings = _resolve_settings(None if path == "-" else path, args, report)
+            settings = _resolve_settings(None if path == "-" else path, args, report, loader)
         except ConfigError as exc:
             # Fatal rather than skipped: continuing would screen this input with
             # rules the user believes are in force and are not.

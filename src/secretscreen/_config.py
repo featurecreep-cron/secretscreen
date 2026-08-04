@@ -193,8 +193,8 @@ def _union(first: tuple[str, ...], second: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(first + second))
 
 
-def load(path: Path) -> Config:
-    """Read and validate one config file. Raises ConfigError on any problem."""
+def _read_toml(path: Path) -> dict[str, object]:
+    """Read and parse one config file. Raises ConfigError on any problem."""
     try:
         if path.is_file() and path.stat().st_size > MAX_CONFIG_BYTES:
             raise ConfigError(f"{path}: larger than {MAX_CONFIG_BYTES} bytes; not a config file")
@@ -203,7 +203,7 @@ def load(path: Path) -> Config:
         raise ConfigError(f"{path}: cannot read: {exc}") from exc
 
     try:
-        data = tomllib.loads(raw)
+        return tomllib.loads(raw)
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"{path}: invalid TOML: {exc}") from exc
     except RecursionError as exc:
@@ -212,7 +212,78 @@ def load(path: Path) -> Config:
         # error handling — and exit 1 reads as "--audit found something".
         raise ConfigError(f"{path}: nested too deeply to parse") from exc
 
-    return _from_mapping(data, str(path))
+
+class Loader:
+    """Reads each config file once for the run that owns it.
+
+    Discovery happens per input file, and the root check needs the same file
+    the loader is about to parse — so the naive arrangement read every config
+    twice per input, and re-walked the same directories for each. Fifty files
+    in a twelve-deep tree came to some twelve hundred reads of a handful of
+    files.
+
+    Scoped to one run rather than kept module-level: a config edited between
+    two invocations has to be seen, and a cache nobody can invalidate is how
+    that stops being true.
+    """
+
+    def __init__(self) -> None:
+        self._parsed: dict[str, dict[str, object]] = {}
+        self._walks: dict[tuple[str, str, bool], list[Path]] = {}
+
+    def load(self, path: Path) -> Config:
+        """Read and validate one config file. Raises ConfigError on any problem."""
+        return _from_mapping(self._raw(path), str(path))
+
+    def discover(self, start: Path, *, stop_at: Path | None = None, honour_root: bool = True) -> list[Path]:
+        """Find project configs from `start` upward, nearest last."""
+        current = start.resolve() if start.exists() else start.absolute()
+        key = (str(current), str(stop_at), honour_root)
+        if key not in self._walks:
+            self._walks[key] = self._walk(current, stop_at, honour_root)
+        return self._walks[key]
+
+    def _raw(self, path: Path) -> dict[str, object]:
+        key = str(path)
+        if key not in self._parsed:
+            self._parsed[key] = _read_toml(path)
+        return self._parsed[key]
+
+    def _declares_root(self, path: Path) -> bool:
+        """Check the root flag without failing the walk on a broken file.
+
+        A malformed config still has to be reported, but that happens when it
+        is loaded. Here a read failure simply means the walk continues.
+        """
+        try:
+            return bool(self._raw(path).get("root", False))
+        except ConfigError:
+            return False
+
+    def _walk(self, start: Path, stop_at: Path | None, honour_root: bool) -> list[Path]:
+        boundary = stop_at if stop_at is not None else Path.home()
+        found: list[Path] = []
+
+        current = start
+        seen: set[Path] = set()
+        while current not in seen:
+            seen.add(current)
+            candidate = current / CONFIG_BASENAME
+            if candidate.is_file():
+                found.append(candidate)
+                if honour_root and self._declares_root(candidate):
+                    break
+            if current == boundary or current == current.parent:
+                break
+            current = current.parent
+
+        found.reverse()
+        return found
+
+
+def load(path: Path) -> Config:
+    """Read and validate one config file. Raises ConfigError on any problem."""
+    return Loader().load(path)
 
 
 def _from_mapping(data: dict[str, object], source: str) -> Config:
@@ -307,33 +378,4 @@ def discover(start: Path, *, stop_at: Path | None = None, honour_root: bool = Tr
     own to strand the reader's: it ends the walk before their own config one
     level up is ever read, and the output looks the same either way.
     """
-    boundary = stop_at if stop_at is not None else Path.home()
-    found: list[Path] = []
-
-    current = start.resolve() if start.exists() else start.absolute()
-    seen: set[Path] = set()
-    while current not in seen:
-        seen.add(current)
-        candidate = current / CONFIG_BASENAME
-        if candidate.is_file():
-            found.append(candidate)
-            if honour_root and _declares_root(candidate):
-                break
-        if current == boundary or current == current.parent:
-            break
-        current = current.parent
-
-    found.reverse()
-    return found
-
-
-def _declares_root(path: Path) -> bool:
-    """Check the root flag without failing the walk on a broken file.
-
-    A malformed config still has to be reported, but that happens when it is
-    loaded. Here a read failure simply means the walk continues.
-    """
-    try:
-        return bool(tomllib.loads(path.read_text(encoding="utf-8")).get("root", False))
-    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError, RecursionError):
-        return False
+    return Loader().discover(start, stop_at=stop_at, honour_root=honour_root)
