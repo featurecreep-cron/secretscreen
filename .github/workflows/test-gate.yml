@@ -1,0 +1,61 @@
+name: Test Gate
+
+# Every change to src/ must arrive with a test that fails without it. The gate
+# runs the pull request's own tests against the base source: at least one newly
+# added test has to fail there, and all of them have to pass once the patch is
+# applied. A test that passes either way proves nothing.
+#
+# Exemptions are deliberate and visible: Dependabot is skipped by author, and a
+# genuine no-behaviour-change pull request is skipped by the `no-test-gate`
+# label, which leaves the reason on the pull request instead of in a log.
+
+on:
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    if: >-
+      github.actor != 'dependabot[bot]' &&
+      !contains(github.event.pull_request.labels.*.name, 'no-test-gate')
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # Full history: the gate diffs against the merge base and checks the
+          # base revision of src/ out in place.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Resolve merge base
+        run: |
+          BASE=$(git merge-base "origin/${{ github.base_ref }}" HEAD)
+          echo "BASE_SHA=$BASE" >> "$GITHUB_ENV"
+          echo "Comparing against $BASE (merge base with ${{ github.base_ref }})"
+
+      - name: Does the test prove the fix?
+        run: python .github/scripts/pr_test_gate.py --base "$BASE_SHA" --head HEAD
+
+  # Reports the exemption rather than leaving a silent gap in the checks list.
+  exempt:
+    runs-on: ubuntu-latest
+    if: contains(github.event.pull_request.labels.*.name, 'no-test-gate')
+    steps:
+      - name: Record the exemption
+        run: |
+          echo "::notice::Test gate skipped via the no-test-gate label."
+          echo "This pull request claims it changes no behaviour."
+          echo "That claim is the reviewer's to check."
