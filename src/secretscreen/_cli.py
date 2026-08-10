@@ -694,7 +694,8 @@ examples:
 exit codes:
   0  nothing to report
   1  --audit found something
-  2  a line could not be parsed, a file could not be read, or a config is invalid
+  2  a line could not be parsed, a file could not be read, a config is invalid,
+     or no input was given
 
 --audit prints key names, layers, and reasons — never a value, in either mode.
 --explain does the same for values that were left alone.
@@ -760,6 +761,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     # None rather than NORMAL: config may set the mode, and only an explicit
     # flag should override it.
     args.mode = Mode.AGGRESSIVE if args.aggressive else None
+
+    # No files and a terminal on stdin: nothing was given to read and nothing
+    # is coming. Blocking on the terminal there is indistinguishable from a
+    # hang, and a cat-replacement that appears to hang on the first bare run is
+    # one nobody runs twice. An explicit `-` still reads the terminal — that is
+    # someone asking for it on purpose.
+    if not args.files and sys.stdin.isatty():
+        parser.print_help(sys.stderr)
+        print(
+            "\nsecretscreen: no input — pass a FILE, pipe something in, or use '-' to read the terminal.",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
 
     report = _Report()
     # One loader for the run: discovery repeats per input, and the files it
