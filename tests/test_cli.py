@@ -288,7 +288,7 @@ class _TtyStdin:
         self._text = text
 
     def read(self) -> str:
-        if self._text is None:
+        if self._text is None:  # pragma: no cover — a tripwire; reaching it is the failure
             raise AssertionError("read the terminal instead of bailing out")
         return self._text
 
