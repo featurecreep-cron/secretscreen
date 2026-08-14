@@ -251,6 +251,51 @@ class TestFormats:
         assert out.count("[REDACTED]") == 2
 
 
+class TestNoInput:
+    """A bare `secretscreen` at a terminal must not sit there reading it.
+
+    Waiting on an interactive terminal is indistinguishable from a hang, and it
+    is the first thing anyone types after installing.
+    """
+
+    def test_bare_invocation_at_a_terminal_exits_instead_of_reading(self, capsys, monkeypatch) -> None:
+        monkeypatch.setattr("sys.stdin", _TtyStdin())
+        code = main([])
+        err = capsys.readouterr().err
+
+        assert code == EXIT_ERROR
+        assert "no input" in err
+        assert "usage: secretscreen" in err
+
+    def test_audit_with_no_files_at_a_terminal_exits_too(self, capsys, monkeypatch) -> None:
+        monkeypatch.setattr("sys.stdin", _TtyStdin())
+        assert main(["--audit"]) == EXIT_ERROR
+
+    def test_explicit_dash_still_reads_the_terminal(self, capsys, monkeypatch) -> None:
+        """`-` is someone asking for stdin on purpose; the guard is for the implicit case."""
+        monkeypatch.setattr("sys.stdin", _TtyStdin("DB_PASSWORD=hunter2\n"))
+        code = main(["-"])
+        out = capsys.readouterr().out
+
+        assert code == EXIT_OK
+        assert "DB_PASSWORD=[REDACTED]" in out
+
+
+class _TtyStdin:
+    """An interactive terminal on stdin. read() blocks in reality, so it fails here."""
+
+    def __init__(self, text: str | None = None) -> None:
+        self._text = text
+
+    def read(self) -> str:
+        if self._text is None:
+            raise AssertionError("read the terminal instead of bailing out")
+        return self._text
+
+    def isatty(self) -> bool:
+        return True
+
+
 class _FakeStdin:
     """Minimal stdin stand-in for pipe tests."""
 
@@ -259,3 +304,7 @@ class _FakeStdin:
 
     def read(self) -> str:
         return self._text
+
+    def isatty(self) -> bool:
+        """A pipe, not a terminal — the CLI checks before it decides to read."""
+        return False

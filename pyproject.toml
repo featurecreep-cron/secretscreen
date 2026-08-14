@@ -45,6 +45,19 @@ packages = ["src/secretscreen"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
+# Measure the package, not the suite. Bare `pytest --cov` measures everything
+# imported, which counts tests/ as covered code and puts patch coverage on the
+# test file itself. That penalises exactly the tests worth writing: a branch
+# that exists to fail the suite if a bug returns never runs while the code is
+# correct, so a passing suite reads as an uncovered line.
+#
+# Omit rather than `source`: setting a source root rewrites every path in
+# coverage.xml relative to it, and codecov matches those paths against the
+# repository. Dropping the suite leaves `src/secretscreen/...` exactly as it
+# has always been reported.
+[tool.coverage.run]
+omit = ["tests/*"]
+
 [tool.mypy]
 strict = true
 warn_return_any = true

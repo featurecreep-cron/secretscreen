@@ -239,10 +239,13 @@ class TestPrefixDetectionIsConservative:
 
 
 class _Stdin:
-    """Minimal stdin stand-in; the CLI only ever calls read()."""
+    """Minimal stdin stand-in; the CLI reads it and asks whether it is a terminal."""
 
     def __init__(self, text: str) -> None:
         self._text = text
 
     def read(self) -> str:
         return self._text
+
+    def isatty(self) -> bool:
+        return False
