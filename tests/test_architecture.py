@@ -268,28 +268,53 @@ class TestNoSideEffects:
 
 
 class TestVersionSync:
-    """pyproject version and __version__ must agree.
+    """There must be exactly one source of the version.
 
-    Nothing else enforces this, and a drift ships a wheel whose metadata
-    disagrees with the value the library reports at runtime.
+    pyproject declares `version` dynamic and hatch-vcs derives it from the git
+    tag, so a literal anywhere would be a second source that drifts the moment a
+    release is cut — `--version` would then report a version the user does not
+    have installed. The old form of this test compared pyproject's static
+    version against a literal in __init__; both are gone.
     """
 
-    def test_versions_match(self):
+    def test_pyproject_declares_version_dynamic(self):
         import tomllib
 
         pyproject = Path(__file__).parent.parent / "pyproject.toml"
-        declared = tomllib.loads(pyproject.read_text())["project"]["version"]
+        project = tomllib.loads(pyproject.read_text())["project"]
 
+        assert "version" not in project, "pyproject declares a static version; the git tag is the only source"
+        assert "version" in project.get("dynamic", [])
+
+    def test_version_is_derived_from_metadata(self):
+        """A literal fallback inside `except PackageNotFoundError` is fine.
+
+        What must not exist is a module-level literal that shadows the derived
+        value — that is the second source of truth this test guards against.
+        """
         tree = ast.parse((SRC / "__init__.py").read_text())
-        runtime = None
-        for node in ast.walk(tree):
+
+        calls = [
+            n
+            for n in ast.walk(tree)
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id.endswith("metadata_version")
+        ]
+        assert calls, "__version__ is not derived from installed metadata"
+
+        for node in tree.body:  # module level only; the except-branch is nested
             if isinstance(node, ast.Assign):
                 for target in node.targets:
                     if isinstance(target, ast.Name) and target.id == "__version__":
-                        if isinstance(node.value, ast.Constant):
-                            runtime = node.value.value
+                        assert not isinstance(node.value, ast.Constant), (
+                            "__version__ is assigned a literal at module level"
+                        )
 
-        assert runtime == declared, f"pyproject version {declared!r} != __version__ {runtime!r}"
+    def test_runtime_version_matches_installed_metadata(self):
+        from importlib.metadata import version
+
+        import secretscreen
+
+        assert secretscreen.__version__ == version("secretscreen")
 
 
 class TestCLIEntryPoint:
