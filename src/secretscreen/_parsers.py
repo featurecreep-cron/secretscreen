@@ -107,13 +107,17 @@ def _parse_dsn(value: str) -> list[tuple[str, str]]:
 
 
 def _parse_url_query(value: str) -> list[tuple[str, str]]:
-    """Extract pairs from URL query parameters."""
+    """Extract pairs from URL query parameters and embedded credentials.
+
+    Credentials are collected whether or not the URL carries a query string.
+    Returning early on an empty query — as this did previously — made the
+    credential extraction below unreachable for every URL without a ``?``,
+    which is most of them.
+    """
     if "://" not in value and "?" not in value:
         return []
 
     parsed = urlsplit(value)
-    if not parsed.query:
-        return []
 
     pairs: list[tuple[str, str]] = []
     for k, values in parse_qs(parsed.query).items():
@@ -152,15 +156,25 @@ def _parse_ini(value: str) -> list[tuple[str, str]]:
     return pairs
 
 
-def _flatten(data: object, _prefix: str = "") -> list[tuple[str, str]]:
-    """Recursively flatten nested structures into key-value pairs."""
+_MAX_FLATTEN_DEPTH = 50
+
+
+def _flatten(data: object, _prefix: str = "", _depth: int = 0) -> list[tuple[str, str]]:
+    """Recursively flatten nested structures into key-value pairs.
+
+    Depth is capped at _MAX_FLATTEN_DEPTH to prevent RecursionError
+    on adversarial input. Returns pairs collected so far when exceeded.
+    """
+    if _depth >= _MAX_FLATTEN_DEPTH:
+        return []
+
     pairs: list[tuple[str, str]] = []
 
     if isinstance(data, dict):
         for k, v in data.items():
             key = f"{_prefix}.{k}" if _prefix else str(k)
             if isinstance(v, (dict, list)):
-                pairs.extend(_flatten(v, key))
+                pairs.extend(_flatten(v, key, _depth + 1))
             else:
                 pairs.append((key, str(v) if v is not None else ""))
 
@@ -168,7 +182,7 @@ def _flatten(data: object, _prefix: str = "") -> list[tuple[str, str]]:
         for i, item in enumerate(data):
             key = f"{_prefix}[{i}]" if _prefix else f"[{i}]"
             if isinstance(item, (dict, list)):
-                pairs.extend(_flatten(item, key))
+                pairs.extend(_flatten(item, key, _depth + 1))
             else:
                 pairs.append((key, str(item) if item is not None else ""))
 

@@ -24,14 +24,15 @@ DEFAULT_ENTROPY_THRESHOLD = 4.5
 MIN_ENTROPY_LENGTH = 20
 
 
-def shannon_entropy(value: str) -> float:
+def shannon_entropy(value: str, *, _stripped: str | None = None) -> float:
     """Calculate Shannon entropy in bits per character.
 
     Whitespace is stripped before calculation.
     Returns 0.0 for empty strings.
+
+    If _stripped is provided, uses it directly instead of re-stripping.
     """
-    # Strip all whitespace — spaces aren't informative for secret detection
-    chars = "".join(value.split())
+    chars = _stripped if _stripped is not None else "".join(value.split())
     length = len(chars)
 
     if length == 0:
@@ -59,7 +60,7 @@ def looks_like_secret(
     if len(chars) < min_length:
         return None
 
-    ent = shannon_entropy(value)
+    ent = shannon_entropy(value, _stripped=chars)
     if ent >= threshold:
         return ent
 

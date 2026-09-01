@@ -94,17 +94,17 @@ def matches_key_pattern(
 
     Returns the matched pattern string, or None if no match.
     Keys ending with a safe suffix are excluded even if they match a pattern.
+
+    Safe suffix check runs once (not per-pattern). Pattern check runs first
+    (common case: no match → early return).
     """
     key_lower = key.lower()
 
-    # Safe suffix check — catches prefixed variants like
-    # GF_AUTH_GENERIC_OAUTH_TOKEN_URL, PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED
-    for suffix in safe_suffixes:
-        if key_lower.endswith(suffix):
-            return None
+    # Check safe suffix once upfront
+    is_safe = any(key_lower.endswith(suffix) for suffix in safe_suffixes)
 
     for pattern in patterns:
         if pattern in key_lower:
-            return pattern
+            return None if is_safe else pattern
 
     return None
