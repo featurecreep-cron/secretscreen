@@ -59,3 +59,25 @@ jobs:
           echo "::notice::Test gate skipped via the no-test-gate label."
           echo "This pull request claims it changes no behaviour."
           echo "That claim is the reviewer's to check."
+
+  # A required status check has to report on EVERY pull request. `gate` and
+  # `exempt` are mutually exclusive and both skip on Dependabot PRs, so
+  # requiring either directly would block those PRs forever waiting for a check
+  # that never runs. This job always reports, and fails only when the gate
+  # actually failed — which is what makes the gate enforceable rather than
+  # advisory. Require THIS check, not `gate`.
+  gate-result:
+    needs: [gate, exempt]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report the gate outcome
+        run: |
+          echo "gate=${{ needs.gate.result }}  exempt=${{ needs.exempt.result }}"
+          if [ "${{ needs.gate.result }}" = "failure" ]; then
+            echo "::error::The test gate failed: no added test fails against base source."
+            exit 1
+          fi
+          if [ "${{ needs.exempt.result }}" = "success" ]; then
+            echo "::notice::Exempted via the no-test-gate label."
+          fi
