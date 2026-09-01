@@ -9,6 +9,8 @@ on:
   # limited to the long-lived branches so feature-branch pushes do not
   # double-run.
   pull_request:
+  # Called by release.yml to verify main before anything is tagged.
+  workflow_call:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

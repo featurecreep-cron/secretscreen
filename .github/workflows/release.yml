@@ -1,0 +1,118 @@
+name: Release
+
+# Releases are deliberate, not a side effect of merging. workflow_dispatch is
+# the normal path; the weekly schedule is the floor, so a maintainer absent for
+# months does not leave fixes sitting on develop unreleased.
+on:
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Force version bump type (leave empty for auto-detect)"
+        required: false
+        type: choice
+        options:
+          - ""
+          - "patch"
+          - "minor"
+          - "major"
+  schedule:
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  # Promote develop -> main through a PR, not a direct push. Nothing is exempt
+  # from main-protection: the PR is approved by the automerge workflow's author
+  # allowlist and merged by auto-merge once the required checks are green.
+  promote:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Open promotion PR and wait for it to merge
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if git diff --quiet origin/main origin/develop; then
+            echo "develop and main are identical — nothing to promote."
+            exit 0
+          fi
+
+          pr=$(gh pr list --base main --head develop --state open \
+                 --json number --jq '.[0].number // empty')
+          if [ -z "$pr" ]; then
+            pr=$(gh pr create --base main --head develop \
+                   --title "release: promote develop to main" \
+                   --body "Automated promotion. Merged by auto-merge once CI is green." \
+                   | grep -oE '[0-9]+$')
+            echo "opened PR #$pr"
+          else
+            echo "reusing open PR #$pr"
+          fi
+
+          gh pr merge --auto --merge "$pr"
+
+          for _ in $(seq 1 60); do
+            state=$(gh pr view "$pr" --json state --jq .state)
+            [ "$state" = "MERGED" ] && { echo "promotion merged"; exit 0; }
+            [ "$state" = "CLOSED" ] && { echo "::error::promotion PR was closed"; exit 1; }
+            sleep 30
+          done
+          echo "::error::promotion PR #$pr did not merge within 30 minutes"
+          exit 1
+
+  # Run the suite against main as it now stands, before anything is tagged.
+  verify:
+    needs: promote
+    uses: ./.github/workflows/ci.yml
+    secrets: inherit
+
+  release:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # The app token, not GITHUB_TOKEN. psr creates the GitHub Release, and
+      # publish.yml fires on `release: published` — an event triggered by
+      # GITHUB_TOKEN starts no workflow run, so the package would never be
+      # published. This is the one credential this workflow needs.
+      - name: Generate token
+        id: generate_token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_PRIVATE_KEY }}
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ steps.generate_token.outputs.token }}
+
+      # Tag-only. hatch-vcs derives the version from the tag, so there is no
+      # file to write and no commit to make — which means no push to a protected
+      # branch and no bypass actor anywhere. Rulesets cover branches, not tags.
+      - name: Python Semantic Release
+        uses: python-semantic-release/python-semantic-release@9a026e9303981c866c3425723009becb2437c757  # v10.6.2
+        with:
+          github_token: ${{ steps.generate_token.outputs.token }}
+          force: ${{ github.event.inputs.force || '' }}
+          commit: "false"
+          changelog: "false"
+          tag: "true"
+          push: "true"
+          vcs_release: "true"
+          build: "false"

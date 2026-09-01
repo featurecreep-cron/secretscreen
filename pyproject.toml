@@ -1,10 +1,10 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs>=0.4"]
 build-backend = "hatchling.build"
 
 [project]
 name = "secretscreen"
-version = "0.5.1"
+dynamic = ["version"]
 description = "Detect and redact secrets in key-value pairs, dicts, and environment variables. Library and CLI."
 readme = "README.md"
 license = "MIT"
@@ -70,3 +70,31 @@ line-length = 120
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "A", "SIM", "TCH"]
 ignore = ["SIM102", "SIM108"]
+
+[tool.hatch.version]
+# The git tag is the single source of the version. Nothing writes it into a
+# file, so pyproject and the tag cannot drift apart.
+source = "vcs"
+
+[tool.semantic_release]
+commit_parser = "conventional"
+tag_format = "v{version}"
+major_on_zero = false
+allow_zero_version = true
+
+[tool.semantic_release.commit_parser_options]
+minor_tags = ["feat"]
+# "deps" is a patch-producing type across our repos. secretscreen has no runtime
+# dependencies today so nothing emits it here, but the parser should agree with
+# the others the day that changes. allowed_tags must be listed explicitly: its
+# default is computed from the class-level defaults, so overriding patch_tags
+# alone leaves "deps" unrecognised and silently drops every such commit.
+patch_tags = ["fix", "perf", "deps"]
+allowed_tags = [
+    "feat", "fix", "perf", "deps",
+    "build", "chore", "ci", "docs", "style", "refactor", "test",
+]
+
+[tool.semantic_release.branches.main]
+match = "main"
+prerelease = false
