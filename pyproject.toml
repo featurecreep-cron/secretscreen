@@ -4,15 +4,16 @@ build-backend = "hatchling.build"
 
 [project]
 name = "secretscreen"
-version = "0.1.0"
-description = "Detect and redact secrets in key-value pairs, dicts, and environment variables."
+version = "0.5.1"
+description = "Detect and redact secrets in key-value pairs, dicts, and environment variables. Library and CLI."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
 authors = [{ name = "Cron", email = "cron@featurecreep.dev" }]
-keywords = ["secrets", "redaction", "security", "environment", "docker"]
+keywords = ["secrets", "redaction", "security", "environment", "docker", "cli", "command-line"]
 classifiers = [
     "Development Status :: 3 - Alpha",
+    "Environment :: Console",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
@@ -21,11 +22,17 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Topic :: Security",
     "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Utilities",
     "Typing :: Typed",
 ]
 
+[project.scripts]
+secretscreen = "secretscreen._cli:main"
+
 [project.optional-dependencies]
-dev = ["pytest>=7.0", "pytest-cov>=5.0", "ruff>=0.4", "mypy>=1.10"]
+# Linters gate CI, so they carry upper bounds: an unpinned ruff minor bump
+# (0.15 -> 0.16) silently changed formatting rules and broke an unrelated PR.
+dev = ["pytest>=9.1.1", "pytest-cov>=7.1.0", "ruff>=0.16.0,<0.17", "mypy>=2.3.0,<3"]
 
 [project.urls]
 Homepage = "https://github.com/featurecreep-cron/secretscreen"
@@ -37,6 +44,19 @@ packages = ["src/secretscreen"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+# Measure the package, not the suite. Bare `pytest --cov` measures everything
+# imported, which counts tests/ as covered code and puts patch coverage on the
+# test file itself. That penalises exactly the tests worth writing: a branch
+# that exists to fail the suite if a bug returns never runs while the code is
+# correct, so a passing suite reads as an uncovered line.
+#
+# Omit rather than `source`: setting a source root rewrites every path in
+# coverage.xml relative to it, and codecov matches those paths against the
+# repository. Dropping the suite leaves `src/secretscreen/...` exactly as it
+# has always been reported.
+[tool.coverage.run]
+omit = ["tests/*"]
 
 [tool.mypy]
 strict = true

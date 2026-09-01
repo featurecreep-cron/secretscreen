@@ -54,12 +54,17 @@ def _prepare_regex(pattern: str) -> tuple[str, int]:
     return pattern, flags
 
 
-def _load_rules() -> tuple[FormatRule, ...]:
-    """Load and compile gitleaks rules from vendored TOML."""
+def _load_rules() -> tuple[tuple[FormatRule, ...], frozenset[str]]:
+    """Load and compile gitleaks rules from vendored TOML.
+
+    Returns (rules, all_keywords) where all_keywords is the union of
+    every keyword across all rules, used for cross-rule pre-filtering.
+    """
     toml_path = importlib.resources.files("secretscreen").joinpath("gitleaks.toml")
     data = tomllib.loads(toml_path.read_text(encoding="utf-8"))
 
     rules: list[FormatRule] = []
+    all_kw: set[str] = set()
     for entry in data.get("rules", []):
         regex_str = entry.get("regex")
         if not regex_str:
@@ -74,40 +79,50 @@ def _load_rules() -> tuple[FormatRule, ...]:
         except re.error:
             continue  # skip genuinely malformed patterns
 
+        keywords = tuple(entry.get("keywords", ()))
+        all_kw.update(keywords)
         rules.append(
             FormatRule(
                 id=entry["id"],
                 description=entry.get("description", ""),
                 regex=compiled,
-                keywords=tuple(entry.get("keywords", ())),
+                keywords=keywords,
                 entropy=entry.get("entropy"),
                 secret_group=entry.get("secretGroup", 0),
             )
         )
 
-    return tuple(rules)
+    return tuple(rules), frozenset(all_kw)
 
 
 # Compiled once at import time.
-RULES: tuple[FormatRule, ...] = _load_rules()
+RULES: tuple[FormatRule, ...]
+_ALL_KEYWORDS: frozenset[str]
+RULES, _ALL_KEYWORDS = _load_rules()
 
 
 def matches_known_format(value: str) -> FormatRule | None:
     """Check if a value matches any known secret format.
 
     Returns the matching rule, or None.
-    Uses keyword pre-filtering for performance.
+    Uses a two-phase keyword pre-filter: first builds the set of keywords
+    present in the value (single pass), then checks per-rule intersection.
     """
     if len(value) < 8:
         return None  # too short for any meaningful format
 
     value_lower = value.lower()
 
+    # Single-pass keyword scan: find which keywords appear in this value.
+    # This replaces per-rule O(keywords × len(value)) substring scans
+    # with one O(all_keywords × len(value)) pass + O(1) set lookups per rule.
+    matched_keywords = {kw for kw in _ALL_KEYWORDS if kw in value_lower}
+
     for rule in RULES:
         # Keyword pre-filter: if the rule has keywords, at least one must
         # appear in the value (case-insensitive) before we bother with regex.
         if rule.keywords:
-            if not any(kw in value_lower for kw in rule.keywords):
+            if not matched_keywords.intersection(rule.keywords):
                 continue
 
         if rule.regex.search(value):
