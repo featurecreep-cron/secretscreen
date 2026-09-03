@@ -241,9 +241,28 @@ def _detect_with_pairs(
             None,
         )
 
-    # Layers 2-5 all scan the value itself. Stop here for oversized input.
+    # Layers 2-5 all scan the value itself, and an oversized value cannot be
+    # screened. Returning "no finding" here would be indistinguishable from
+    # "scanned and clean", so redact_pair would hand back an unexamined value
+    # and audit_pair would call it clean. Fail closed instead: report it as
+    # unscanned, which redacts it and shows up in an audit.
+    #
+    # The alternative — passing it through and expecting callers to notice —
+    # was tried and did not hold. The CLI re-derived the check by hand and a
+    # library consumer had no way to, so an unexamined value was printed as
+    # though it had been screened.
     if oversized:
-        return (None, None)
+        return (
+            Finding(
+                key=key,
+                reason="unscanned:size",
+                layer="size_cap",
+                detail=(
+                    f"{len(value)} bytes exceeds the {_MAX_DETECT_LENGTH}-byte scan cap; the value was not examined"
+                ),
+            ),
+            None,
+        )
 
     # Layer 4: URL credential detection (even without key pattern match)
     if has_url_credentials(value):
@@ -524,17 +543,13 @@ def _explain(key: str, value: str, config: ScreenConfig) -> Explanation:
 
     finding = _detect(key, value, config)
     if finding is not None:
+        # Redacted-because-unexaminable is a different fact from
+        # redacted-because-a-secret-was-found, and a reader needs to tell them
+        # apart. Layer 1 still wins for an oversized value under a secret key
+        # name, so that case reports as redacted, which is accurate.
+        if finding.layer == "size_cap":
+            return Explanation(key, STATE_UNSCANNED, finding.layer, finding.detail or "")
         return Explanation(key, STATE_REDACTED, finding.layer, _describe_finding(finding, value))
-
-    # Order matters: layer 1 still redacts an oversized value under a secret
-    # key name, so the size skip is only reported once detection has declined.
-    if len(value) > _MAX_DETECT_LENGTH:
-        return Explanation(
-            key,
-            STATE_UNSCANNED,
-            "",
-            f"{len(value)} bytes exceeds the {_MAX_DETECT_LENGTH}-byte scan cap",
-        )
 
     vetoed = _vetoed_by_safe_suffix(key, config)
     if vetoed is not None:
