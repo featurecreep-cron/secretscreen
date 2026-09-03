@@ -4,6 +4,7 @@ from secretscreen import Finding, Mode, audit_dict, audit_pair, redact_dict, red
 from secretscreen._core import (
     _MAX_DETECT_LENGTH,
     _MAX_RECURSIVE_DEPTH,
+    REDACTED,
     STATE_REDACTED,
     STATE_UNSCANNED,
     explain_dict,
@@ -384,11 +385,19 @@ class TestSecurityFixes:
         finding_str = str(finding)
         assert "sup3r_s3cr3t" not in finding_str
 
-    def test_large_value_does_not_cause_dos(self) -> None:
-        """MEDIUM-3: Values over 1MB skip the value-scanning layers."""
+    def test_large_value_skips_the_scanning_layers(self) -> None:
+        """MEDIUM-3: values past the cap are never scanned, so they are not a DoS.
+
+        The size cap still holds — layers 2-5 do not run. What changed is what
+        happens afterwards: an unexamined value is redacted rather than returned,
+        because returning it claims a screening that did not happen.
+        """
         large_value = "x" * 2_000_000  # 2MB
-        result = redact_pair("SOME_KEY", large_value)
-        assert result == large_value  # returned unchanged, not processed
+        assert redact_pair("SOME_KEY", large_value) == REDACTED
+
+        finding = audit_pair("SOME_KEY", large_value)
+        assert finding is not None
+        assert finding.layer == "size_cap"  # not format/entropy — nothing scanned it
 
     def test_large_value_under_secret_key_is_still_redacted(self) -> None:
         """The size cap must not fail open: layer 1 reads the key, not the value.
@@ -444,21 +453,50 @@ class TestSecurityFixes:
         assert redact_pair("SECRET_KEY", large_value) == "[REDACTED]"
         assert time.perf_counter() - start < 1.0
 
-    def test_oversized_value_under_non_denylisted_key_is_a_known_gap(self) -> None:
-        """Documents the residual size-cap gap rather than leaving it unstated.
+    def test_oversized_value_under_an_innocuous_key_fails_closed(self) -> None:
+        """The former residual gap, now closed.
 
         Keys like DATABASE_URL carry a safe suffix ('_url'), so layer 1 never
-        matches them — they rely on layer 4, which scans the value and is
-        therefore skipped when oversized. Such values pass through unredacted.
-        Callers that print values must surface the skip; see _MAX_DETECT_LENGTH.
+        matches them — they rely on layer 4, which scans the value and is skipped
+        when oversized. Such values used to pass through unredacted, and the
+        contract was that callers "must surface the skip". They could not: the
+        state was not exposed, so the CLI re-derived it by hand and a library
+        consumer had no way to at all, printing an unexamined secret.
         """
         large_url = "postgres://user:pw@host/db?pad=" + "x" * 2_000_000
-        assert redact_pair("DATABASE_URL", large_url) == large_url
-        assert audit_pair("DATABASE_URL", large_url) is None
+        assert redact_pair("DATABASE_URL", large_url) == REDACTED
 
-        # Same URL under the cap is redacted normally.
+        finding = audit_pair("DATABASE_URL", large_url)
+        assert finding is not None
+        assert finding.layer == "size_cap"
+        assert "not examined" in (finding.detail or "")
+
+        # Same URL under the cap is scanned and partially redacted as before.
         small_url = "postgres://user:pw@host/db"
         assert redact_pair("DATABASE_URL", small_url) == "postgres://user:REDACTED@host/db"
+
+    def test_a_secret_inside_an_oversized_value_is_not_emitted(self) -> None:
+        """The concrete failure this closes.
+
+        A container env var over the cap, under a key matching no secret
+        pattern, carrying a token that only value-shape detection would find.
+        Before, the token came back verbatim and audit_pair reported clean.
+        """
+        token = "ghp_012345678901234567890123456789012345"
+        value = "A" * 70_000 + token
+
+        assert token not in redact_pair("NOTES", value)
+        assert audit_pair("NOTES", value) is not None
+
+    def test_oversized_under_a_secret_key_still_reports_the_real_reason(self) -> None:
+        """Layer 1 reads the key, not the value, so it still wins.
+
+        That distinction matters: redacted-because-a-secret-was-named is a
+        different fact from redacted-because-unexaminable.
+        """
+        finding = audit_pair("PASSWORD", "x" * 2_000_000)
+        assert finding is not None
+        assert finding.layer == "key_pattern"
 
     def test_deeply_nested_dict_does_not_crash(self) -> None:
         """MEDIUM-4: redact_dict should handle deeply nested dicts without RecursionError."""
