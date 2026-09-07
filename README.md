@@ -169,7 +169,7 @@ secretscreen: explain — key names and reasons only, no values
   unscanned  BACKUP_BLOB                  -                2202009 bytes exceeds the 65536-byte scan cap
 ```
 
-Four states. `redacted` and `clean` are self-explanatory; the two in between are the ones worth reading. **`vetoed`** means a rule fired and something suppressed it — that is where the tool decided to stay quiet. **`unscanned`** means the size cap skipped the value-scanning layers.
+Four states. `redacted` and `clean` are self-explanatory; the two in between are the ones worth reading. **`vetoed`** means a rule fired and something suppressed it — that is where the tool decided to stay quiet. **`unscanned`** means the size cap skipped the value-scanning layers, so the value is redacted on the grounds that it was never examined — an unscanned value is not a clean one.
 
 Clean lines carry the nearest miss rather than silence. The entropy figure is computed even in normal mode, where that layer never runs, so you can see what `--aggressive` would change before turning it on.
 
@@ -183,7 +183,7 @@ Like `--audit`, this never prints a value — paste it into a bug report as-is.
 | 1 | `--audit` found secrets |
 | 2 | Something could not be parsed or read — see stderr |
 
-That third case is the one that matters. This is best-effort defense-in-depth, and a cat-replacement is exactly the tool people stop thinking about, so the CLI never prints unparsed content verbatim: a line it cannot structure is replaced with the redaction token, named on stderr, and turns the exit code non-zero. The same applies to values above the 64 KB detection cap — they are reported as unscanned rather than passed off as clean.
+That third case is the one that matters. This is best-effort defense-in-depth, and a cat-replacement is exactly the tool people stop thinking about, so the CLI never prints unparsed content verbatim: a line it cannot structure is replaced with the redaction token, named on stderr, and turns the exit code non-zero. The same applies to values above the 64 KB detection cap — they are redacted and reported as unscanned rather than passed off as clean. That holds in the library too, not just the CLI: `redact_pair` returns the replacement and `audit_pair` returns a `size_cap` finding, so a consumer cannot mistake *not examined* for *examined and clean*.
 
 If you are scanning a git repository rather than config-shaped data, use [gitleaks](https://github.com/gitleaks/gitleaks) instead. That is a different job.
 

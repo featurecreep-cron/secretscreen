@@ -348,7 +348,12 @@ def _redact_value(key: str, value: str, settings: _Settings, replacement: str) -
     result = redact_pair(
         key, value, mode=settings.mode, replacement=replacement, entropy_threshold=settings.entropy_threshold
     )
-    unscanned = len(value) > _MAX_DETECT_LENGTH and result == value
+    # Ask the library rather than re-deriving it from the size. The old form
+    # inferred unscanned from `oversized and unchanged`, which duplicated a
+    # private constant and stopped being true once redaction started failing
+    # closed. secretscreen now reports the state directly.
+    finding = audit_pair(key, value, mode=settings.mode, entropy_threshold=settings.entropy_threshold)
+    unscanned = finding is not None and finding.layer == "size_cap"
     return result, unscanned
 
 

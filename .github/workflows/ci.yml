@@ -2,12 +2,15 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
   # No `branches:` filter. Gating on the base branch means a stacked pull
   # request — one opened against another feature branch — runs nothing, and
   # reports only the skipped automerge job, which reads like a pass. Push is
-  # still limited to main so feature-branch pushes do not double-run.
+  # limited to the long-lived branches so feature-branch pushes do not
+  # double-run.
   pull_request:
+  # Called by release.yml to verify main before anything is tagged.
+  workflow_call:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

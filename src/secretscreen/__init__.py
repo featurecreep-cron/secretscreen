@@ -19,6 +19,9 @@ Two modes:
 audit_pair() and audit_dict() return structured findings without mutating values.
 """
 
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _metadata_version
+
 from secretscreen._core import (
     Finding,
     Mode,
@@ -37,4 +40,11 @@ __all__ = [
     "redact_pair",
 ]
 
-__version__ = "0.5.1"
+# Read from installed metadata, which hatch-vcs derives from the git tag. A
+# hardcoded literal here would be a second source of truth and would drift the
+# moment a release is cut — `--version` would then report a version that is not
+# the one the user installed.
+try:
+    __version__ = _metadata_version("secretscreen")
+except PackageNotFoundError:  # running from a source tree without an install
+    __version__ = "0.0.0+dev"
