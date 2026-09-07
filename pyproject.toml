@@ -34,7 +34,7 @@ secretscreen = "secretscreen._cli:main"
 # linters previously carried upper bounds still applies and is now covered by
 # the pin: an unpinned ruff minor bump (0.15 -> 0.16) silently changed
 # formatting rules and broke an unrelated PR.
-dev = ["pytest==9.1.1", "pytest-cov==7.1.0", "ruff==0.16.5", "mypy==2.3.1"]
+dev = ["pytest==9.1.1", "pytest-cov==7.1.0", "ruff==0.16.6", "mypy==2.3.1"]
 
 [project.urls]
 Homepage = "https://github.com/featurecreep-cron/secretscreen"
