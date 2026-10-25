@@ -100,3 +100,11 @@ allowed_tags = [
 [tool.semantic_release.branches.main]
 match = "main"
 prerelease = false
+
+[tool.mutmut]
+# The architecture tests read the package source to check its shape. Under
+# mutmut that source is the instrumented copy, which imports mutmut, so they
+# fail on every mutant -- and being static, they could never kill one anyway.
+source_paths = ["src/secretscreen"]
+pytest_add_cli_args_test_selection = ["tests/"]
+pytest_add_cli_args = ["--ignore=tests/test_architecture.py"]

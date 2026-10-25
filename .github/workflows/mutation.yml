@@ -1,0 +1,73 @@
+name: Mutation
+
+# Coverage says a line ran; mutation testing says a test would notice if it were
+# wrong. For a redaction library that is the property that matters: a surviving
+# mutant in a key pattern or entropy threshold is a secret that leaks with the
+# suite still green.
+#
+# Informational, not a gate. The report is the product: survivors.md lists every
+# mutant the suite did not kill, with its diff, so it can be triaged without
+# rerunning anything. A threshold gets added once the survivors have been read,
+# not before.
+#
+# The score depends only on src/ and tests/, so it reruns when they change on
+# main. The monthly run catches what a pinned file cannot: the runner's Python
+# and the standard library moving underneath unchanged code.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "tests/**"
+      - ".github/workflows/mutation.yml"
+      - ".github/scripts/mutation_report.py"
+  # A change to the tooling itself is proven on the pull request, before it
+  # can break the scheduled run on main.
+  pull_request:
+    paths:
+      - ".github/workflows/mutation.yml"
+      - ".github/scripts/mutation_report.py"
+  schedule:
+    - cron: "0 7 1 * *"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  mutmut:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      # mutmut is pinned here rather than in [dev]: .github/scripts/mutation_report.py
+      # reads its internals, and nothing else needs it.
+      - name: Install dependencies
+        run: pip install -e ".[dev]" mutmut==3.8.0
+
+      - name: Run mutmut
+        run: mutmut run --max-children "$(nproc)"
+
+      - name: Build report
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python .github/scripts/mutation_report.py
+          head -n 20 mutation-report/survivors.md >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: mutation-report
+          path: mutation-report/
+          retention-days: 90
