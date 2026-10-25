@@ -22,6 +22,12 @@ on:
       - "tests/**"
       - ".github/workflows/mutation.yml"
       - ".github/scripts/mutation_report.py"
+  # A change to the tooling itself is proven on the pull request, before it
+  # can break the scheduled run on main.
+  pull_request:
+    paths:
+      - ".github/workflows/mutation.yml"
+      - ".github/scripts/mutation_report.py"
   schedule:
     - cron: "0 7 1 * *"
   workflow_dispatch:
