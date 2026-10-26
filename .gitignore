@@ -19,3 +19,7 @@ build/
 .coverage
 .coverage.*
 htmlcov/
+
+# mutation testing (mutation.yml)
+mutants/
+mutation-report/
