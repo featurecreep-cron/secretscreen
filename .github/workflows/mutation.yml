@@ -54,7 +54,7 @@ jobs:
       # mutmut is pinned here rather than in [dev]: .github/scripts/mutation_report.py
       # reads its internals, and nothing else needs it.
       - name: Install dependencies
-        run: pip install -e ".[dev]" mutmut==3.8.0
+        run: pip install -e ".[dev]" mutmut==3.8.1
 
       - name: Run mutmut
         run: mutmut run --max-children "$(nproc)"
